@@ -375,7 +375,7 @@ app.get('/api/tk-cau-lo-pascal', async (req, res) => {
       SELECT result_date, g0, g1, g2, g3, g4, g5, g6, g7
       FROM xsmb
       ORDER BY result_date DESC
-      LIMIT 31
+      LIMIT 61
     `);
 
     const getAllLast2Digits = (row) => {
@@ -495,7 +495,7 @@ app.get('/api/tk-cau-ong-phong', async (req, res) => {
   try {
     // Lấy 31 ngày gần nhất (để có thể so ngày N và N+1)
     const [rows] = await db.execute(`
-      SELECT result_date, g0, g1, g2, g3, g4, g5, g6, g7 FROM xsmb ORDER BY result_date DESC LIMIT 31
+      SELECT result_date, g0, g1, g2, g3, g4, g5, g6, g7 FROM xsmb ORDER BY result_date DESC LIMIT 61
     `);
 
     const getCauOngPhongFromG0 = (g0) => {
@@ -709,7 +709,7 @@ async function checkCauLo() {
     ) {
       const ngayRoi = data3['tk-cau-lo-roi-short'][0];
       if (ngayRoi <= -3) {
-        const message = `Cầu lô rơi đã được ${Math.abs(ngayRoi)} ngày`;
+        const message = `Cầu lô rơi đã được ${ngayRoi} ngày`;
         await sendTelegramMessage(message);
         console.log(message);
       }
@@ -721,7 +721,17 @@ async function checkCauLo() {
   }
 }
 
-cron.schedule('45 11 * * *', () => {
+cron.schedule('38 11 * * *', () => {
+  console.log('[CRON] Running XSMB crawler at 18h45');
+  fetchAndSaveXSMB();
+});
+
+cron.schedule('35 11 * * *', () => {
+  console.log('[CRON] Running XSMB crawler at 18h45');
+  fetchAndSaveXSMB();
+});
+
+cron.schedule('32 11 * * *', () => {
   console.log('[CRON] Running XSMB crawler at 18h45');
   fetchAndSaveXSMB();
 });
