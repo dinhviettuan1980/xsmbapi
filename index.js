@@ -375,7 +375,7 @@ app.get('/api/tk-cau-lo-pascal', async (req, res) => {
       SELECT result_date, g0, g1, g2, g3, g4, g5, g6, g7
       FROM xsmb
       ORDER BY result_date DESC
-      LIMIT 61
+      LIMIT 91
     `);
 
     const getAllLast2Digits = (row) => {
@@ -495,7 +495,7 @@ app.get('/api/tk-cau-ong-phong', async (req, res) => {
   try {
     // Lấy 31 ngày gần nhất (để có thể so ngày N và N+1)
     const [rows] = await db.execute(`
-      SELECT result_date, g0, g1, g2, g3, g4, g5, g6, g7 FROM xsmb ORDER BY result_date DESC LIMIT 61
+      SELECT result_date, g0, g1, g2, g3, g4, g5, g6, g7 FROM xsmb ORDER BY result_date DESC LIMIT 91
     `);
 
     const getCauOngPhongFromG0 = (g0) => {
