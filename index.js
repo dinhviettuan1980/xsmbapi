@@ -721,17 +721,17 @@ async function checkCauLo() {
   }
 }
 
-cron.schedule('38 11 * * *', () => {
+cron.schedule('34 11 * * *', () => {
   console.log('[CRON] Running XSMB crawler at 18h45');
   fetchAndSaveXSMB();
 });
 
-cron.schedule('35 11 * * *', () => {
+cron.schedule('31 11 * * *', () => {
   console.log('[CRON] Running XSMB crawler at 18h45');
   fetchAndSaveXSMB();
 });
 
-cron.schedule('32 11 * * *', () => {
+cron.schedule('29 11 * * *', () => {
   console.log('[CRON] Running XSMB crawler at 18h45');
   fetchAndSaveXSMB();
 });
