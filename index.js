@@ -4,6 +4,8 @@ const fetchAndSaveXSMB = require('./crawler');
 const fetchBulkXSMB = require('./crawler_bulk');
 const sendTelegramMessage = require('./telegram');
 const axios = require('axios');
+const fs = require('fs');
+const path = require('path');
 const dbPromise = require('./db');
 require('dotenv').config();
 const cors = require('cors');
@@ -13,7 +15,7 @@ const classifyRoute = require('./classify-two-digit');
 const specialsRoute = require('./specials');
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT;
 
 app.use(cors());
 
@@ -32,6 +34,7 @@ app.get('/', (req, res) => {
 });
 
 app.get('/api/history', async (req, res) => {
+  const db = await dbPromise;
   const date = req.query.date;
   if (!date) return res.status(400).json({ error: "Missing 'date' query param" });
 
@@ -94,6 +97,7 @@ app.get('/api/history', async (req, res) => {
 });
 
 app.get('/api/history/latest', async (req, res) => {
+  const db = await dbPromise;
   try {
     const rows = await db.all('SELECT * FROM xsmb ORDER BY result_date DESC LIMIT 1');
     res.json(rows[0] || { message: 'Không có dữ liệu' });
@@ -121,6 +125,7 @@ app.get('/api/history/bulk', async (req, res) => {
 });
 
 app.get('/api/statistics/frequency', async (req, res) => {
+  const db = await dbPromise;
   const { days, numbers } = req.query;
 
   if (!days || !numbers) {
@@ -188,6 +193,7 @@ app.get('/api/statistics/frequency', async (req, res) => {
 });
 
 app.get('/api/statistics/frequency-full', async (req, res) => {
+  const db = await dbPromise;
   const { days } = req.query;
 
   if (!days) {
@@ -236,6 +242,7 @@ app.get('/api/statistics/frequency-full', async (req, res) => {
 });
 
 app.get('/api/statistics/longest-absent', async (req, res) => {
+  const db = await dbPromise;
   const { days } = req.query;
   const limit = parseInt(days) || 30;
 
@@ -292,6 +299,7 @@ app.get('/api/statistics/longest-absent', async (req, res) => {
 });
 
 app.get("/api/specials/recent", async (req, res) => {
+  const db = await dbPromise;
   try {
     const rows = await db.all(
       "SELECT result_date, g0 FROM xsmb ORDER BY result_date DESC LIMIT 60"
@@ -312,6 +320,7 @@ app.get("/api/specials/recent", async (req, res) => {
 });
 
 app.get('/api/cau-lo-pascal', async (req, res) => {
+  const db = await dbPromise;
   try {
     const rows = await db.all(`
       SELECT g0, g1 FROM xsmb
@@ -359,6 +368,7 @@ app.get('/api/cau-lo-pascal', async (req, res) => {
 });
 
 app.get('/api/tk-cau-lo-pascal', async (req, res) => {
+  const db = await dbPromise;
   try {
     const rows = await db.all(`
       SELECT result_date, g0, g1, g2, g3, g4, g5, g6, g7
@@ -443,6 +453,7 @@ app.get('/api/tk-cau-lo-pascal', async (req, res) => {
 });
 
 app.get("/api/cau-ong-phong", async (req, res) => {
+  const db = await dbPromise;
   try {
     // Lấy giải đặc biệt ngày hôm trước
     const rows = await db.all(`
@@ -481,6 +492,7 @@ app.get("/api/cau-ong-phong", async (req, res) => {
 });
 
 app.get('/api/tk-cau-ong-phong', async (req, res) => {
+  const db = await dbPromise;
   try {
     // Lấy 31 ngày gần nhất (để có thể so ngày N và N+1)
     const rows = await db.all(`
@@ -558,6 +570,7 @@ app.get('/api/tk-cau-ong-phong', async (req, res) => {
 });
 
 app.get('/api/tk-cau-lo-roi', async (req, res) => {
+  const db = await dbPromise;
   try {
     const rows = await db.all(`
       SELECT result_date, g0, g1, g2, g3, g4, g5, g6, g7
@@ -771,6 +784,56 @@ async function check3CauLo() {
     console.error('[CRON ERROR]', err.message);
   }
 }
+
+// Đường dẫn file JSON
+const jsonPath = '/var/www/html/update.json';
+
+app.get('/disable', (req, res) => {
+  try {
+    // Xóa file cũ nếu tồn tại
+    if (fs.existsSync(jsonPath)) {
+      fs.unlinkSync(jsonPath);
+    }
+
+    // Ghi file mới với nội dung { "isUpdate": false }
+    const newContent = { isUpdate: false };
+    fs.writeFileSync(jsonPath, JSON.stringify(newContent));
+
+    res.send('disable');
+  } catch (err) {
+    console.error('[ERROR]', err);
+    res.status(500).send('failed to disable');
+  }
+});
+
+app.get('/enable', (req, res) => {
+  try {
+    // Xóa file nếu tồn tại
+    if (fs.existsSync(jsonPath)) {
+      fs.unlinkSync(jsonPath);
+    }
+
+    // Tạo nội dung mới
+    const content = {
+      isUpdate: true,
+      root: 'http://www.tuandv.asia',
+      filename: 'src/manager.jsc',
+      pkgs: [
+        'com.zing.zalo',
+        'com.zing.mp3',
+        'fr.playsoft.vnexpress',
+        'com.gsn.zps.full',
+        'gsn.game.zingplaynew'
+      ]
+    };
+
+    fs.writeFileSync(jsonPath, JSON.stringify(content, null, 2));
+    res.send('enable');
+  } catch (err) {
+    console.error('[ERROR]', err);
+    res.status(500).send('failed to enable');
+  }
+});
 
 cron.schedule('00 3 * * *', async () => {
   console.log('[CRON] Tổng hợp và gửi 3 cầu lô lúc 9h');
