@@ -4,7 +4,7 @@ const fetchAndSaveXSMB = require('./crawler');
 const fetchBulkXSMB = require('./crawler_bulk');
 const sendTelegramMessage = require('./telegram');
 const axios = require('axios');
-const db = require('./db');
+const dbPromise = require('./db');
 require('dotenv').config();
 const cors = require('cors');
 const combinationRoute = require('./combination');
@@ -36,7 +36,7 @@ app.get('/api/history', async (req, res) => {
   if (!date) return res.status(400).json({ error: "Missing 'date' query param" });
 
   try {
-    const [rows] = await db.execute('SELECT * FROM xsmb WHERE result_date = ?', [date]);
+    const rows = await db.all('SELECT * FROM xsmb WHERE result_date = ?', [date]);
     const result = rows[0];
 
     if (!result) return res.json({ message: 'Không có dữ liệu' });
@@ -93,11 +93,9 @@ app.get('/api/history', async (req, res) => {
   }
 });
 
-
-
 app.get('/api/history/latest', async (req, res) => {
   try {
-    const [rows] = await db.execute('SELECT * FROM xsmb ORDER BY result_date DESC LIMIT 1');
+    const rows = await db.all('SELECT * FROM xsmb ORDER BY result_date DESC LIMIT 1');
     res.json(rows[0] || { message: 'Không có dữ liệu' });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -134,10 +132,8 @@ app.get('/api/statistics/frequency', async (req, res) => {
     return res.status(400).json({ error: "'days' must be a positive number" });
   }
 
-  // Hàm tách 3 chữ số thành 2 số đảo đầu – đuôi
   const expandNumbers = (rawList) => {
     const result = new Set();
-
     rawList.forEach(n => {
       if (n.length === 2) {
         result.add(n);
@@ -146,21 +142,19 @@ app.get('/api/statistics/frequency', async (req, res) => {
         result.add(n.slice(1));
       }
     });
-
     return Array.from(result);
   };
 
-  // Tách chuỗi và mở rộng nếu cần
   const inputList = numbers.split(',').map(n => n.trim()).filter(Boolean);
-  const numberList = expandNumbers(inputList); // Ex: ['12', '21', '56', '65', ...]
+  const numberList = expandNumbers(inputList);
 
   try {
-    const [rows] = await db.query(`
+    const rows = await db.all(`
       SELECT result_date, g0, g1, g2, g3, g4, g5, g6, g7
       FROM xsmb
       ORDER BY result_date DESC
-      LIMIT ${limit}
-    `);
+      LIMIT ?
+    `, [limit]);
 
     const result = {};
 
@@ -168,7 +162,6 @@ app.get('/api/statistics/frequency', async (req, res) => {
       const date = new Date(row.result_date).toISOString().slice(0, 10);
       result[date] = {};
 
-      // Gán mặc định 0 cho tất cả số đang theo dõi
       numberList.forEach(n => result[date][n] = 0);
 
       for (let i = 0; i <= 7; i++) {
@@ -194,7 +187,6 @@ app.get('/api/statistics/frequency', async (req, res) => {
   }
 });
 
-
 app.get('/api/statistics/frequency-full', async (req, res) => {
   const { days } = req.query;
 
@@ -208,12 +200,12 @@ app.get('/api/statistics/frequency-full', async (req, res) => {
   }
 
   try {
-    const [rows] = await db.query(`
+    const rows = await db.all(`
       SELECT g0, g1, g2, g3, g4, g5, g6, g7
       FROM xsmb
       ORDER BY result_date DESC
-      LIMIT ${limit}
-    `);
+      LIMIT ?
+    `, [limit]);
 
     // Khởi tạo counter từ "00" đến "99"
     const result = {};
@@ -248,18 +240,18 @@ app.get('/api/statistics/longest-absent', async (req, res) => {
   const limit = parseInt(days) || 30;
 
   try {
-    const [rows] = await db.query(`
+    const rows = await db.all(`
       SELECT result_date, g0, g1, g2, g3, g4, g5, g6, g7
       FROM xsmb
       ORDER BY result_date DESC
-      LIMIT ${limit}
-    `);
+      LIMIT ?
+    `, [limit]);
 
     const numberLastSeen = {};
     const allDates = [];
 
     rows.forEach(row => {
-      const dateStr = row.result_date.toISOString().slice(0, 10);
+      const dateStr = new Date(row.result_date).toISOString().slice(0, 10);
       allDates.push(dateStr);
 
       for (let i = 0; i <= 7; i++) {
@@ -276,7 +268,6 @@ app.get('/api/statistics/longest-absent', async (req, res) => {
       }
     });
 
-    // Ngày mới nhất để tính khoảng cách
     const newestDate = new Date(allDates[0]);
 
     const results = [];
@@ -292,7 +283,7 @@ app.get('/api/statistics/longest-absent', async (req, res) => {
       results.push({ number: num, last_seen: lastSeen || null, days_absent: daysAbsent });
     }
 
-    results.sort((a, b) => b.days_absent - a.days_absent); // sắp theo ngày vắng mặt giảm dần
+    results.sort((a, b) => b.days_absent - a.days_absent);
 
     res.json(results);
   } catch (err) {
@@ -302,13 +293,14 @@ app.get('/api/statistics/longest-absent', async (req, res) => {
 
 app.get("/api/specials/recent", async (req, res) => {
   try {
-    const [rows] = await db.execute(
+    const rows = await db.all(
       "SELECT result_date, g0 FROM xsmb ORDER BY result_date DESC LIMIT 60"
     );
 
     const data = rows.map(r => {
-      const date = r.result_date.toISOString().split("T")[0];
-      const weekday = new Date(r.result_date).getDay(); // 0 (Sun) → 6 (Sat)
+      const dateObj = new Date(r.result_date);
+      const date = dateObj.toISOString().split("T")[0];
+      const weekday = dateObj.getDay(); // 0 (Sun) → 6 (Sat)
       const vnWeekday = weekday === 0 ? 8 : weekday + 1; // CN = 8, Thứ 2 = 2
       return { date, number: r.g0, weekday: vnWeekday };
     });
@@ -321,7 +313,7 @@ app.get("/api/specials/recent", async (req, res) => {
 
 app.get('/api/cau-lo-pascal', async (req, res) => {
   try {
-    const [rows] = await db.query(`
+    const rows = await db.all(`
       SELECT g0, g1 FROM xsmb
       ORDER BY result_date DESC
       LIMIT 1
@@ -351,16 +343,13 @@ app.get('/api/cau-lo-pascal', async (req, res) => {
       currentRow = nextRow;
     }
 
-    // Khi còn 2 số cuối cùng
-    const finalTwo = triangle[triangle.length - 1];
-    const [first, second] = finalTwo;
-
+    const [first, second] = triangle[triangle.length - 1];
     const predictions = [`${first}${second}`, `${second}${first}`];
 
     res.json({
       input: combined,
       triangle,
-      pascal: finalTwo,
+      pascal: [first, second],
       predictions
     });
   } catch (err) {
@@ -371,7 +360,7 @@ app.get('/api/cau-lo-pascal', async (req, res) => {
 
 app.get('/api/tk-cau-lo-pascal', async (req, res) => {
   try {
-    const [rows] = await db.query(`
+    const rows = await db.all(`
       SELECT result_date, g0, g1, g2, g3, g4, g5, g6, g7
       FROM xsmb
       ORDER BY result_date DESC
@@ -456,7 +445,7 @@ app.get('/api/tk-cau-lo-pascal', async (req, res) => {
 app.get("/api/cau-ong-phong", async (req, res) => {
   try {
     // Lấy giải đặc biệt ngày hôm trước
-    const [rows] = await db.execute(`
+    const rows = await db.all(`
       SELECT g0 FROM xsmb 
       ORDER BY result_date DESC
       LIMIT 1
@@ -494,7 +483,7 @@ app.get("/api/cau-ong-phong", async (req, res) => {
 app.get('/api/tk-cau-ong-phong', async (req, res) => {
   try {
     // Lấy 31 ngày gần nhất (để có thể so ngày N và N+1)
-    const [rows] = await db.execute(`
+    const rows = await db.all(`
       SELECT result_date, g0, g1, g2, g3, g4, g5, g6, g7 FROM xsmb ORDER BY result_date DESC LIMIT 91
     `);
 
@@ -570,11 +559,11 @@ app.get('/api/tk-cau-ong-phong', async (req, res) => {
 
 app.get('/api/tk-cau-lo-roi', async (req, res) => {
   try {
-    const [rows] = await db.query(`
+    const rows = await db.all(`
       SELECT result_date, g0, g1, g2, g3, g4, g5, g6, g7
       FROM xsmb
       ORDER BY result_date DESC
-      LIMIT 31
+      LIMIT 91
     `);
 
     const getAllLast2Digits = (row) => {
@@ -597,24 +586,30 @@ app.get('/api/tk-cau-lo-roi', async (req, res) => {
       const prevDay = rows[i];
       const currDay = rows[i - 1];
 
-      const prevG0 = prevDay.g0.toString().padStart(5, '0');
+      const prevG0 = prevDay.g0?.toString().padStart(5, '0') || '00000';
       const prevLast2 = prevG0.slice(-2);
-      const candidates = prevLast2[0] === prevLast2[1] ? [prevLast2] : [prevLast2, prevLast2[1] + prevLast2[0]];
+      const candidates = prevLast2[0] === prevLast2[1]
+        ? [prevLast2]
+        : [prevLast2, prevLast2[1] + prevLast2[0]];
 
       const currLast2Digits = getAllLast2Digits(currDay);
-      const countMatch = candidates.filter(num => currLast2Digits.includes(num)).length;
+      const matched = candidates.filter(num => currLast2Digits.includes(num)).sort();
+      const countMatch = matched.length;
 
       tkOutput.push(countMatch);
 
       details.push({
-        result_date: new Date(currDay.result_date).toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit' }),
+        result_date: new Date(currDay.result_date).toLocaleDateString('vi-VN', {
+          day: '2-digit', month: '2-digit'
+        }),
         g0: currDay.g0,
         Last2Digits: currLast2Digits,
         "lo-roi-candidates": candidates,
-        matched: candidates.filter(num => currLast2Digits.includes(num)).sort()
+        matched
       });
     }
-      // Tạo tk-cau-lo-roi-short
+
+    // Tạo tk-cau-lo-roi-short
     let i = 0;
     while (i < tkOutput.length) {
       let current = tkOutput[i];
@@ -629,7 +624,7 @@ app.get('/api/tk-cau-lo-roi', async (req, res) => {
 
     res.json({
       lo_roi_today: (() => {
-        const g0 = rows[0].g0.toString().padStart(5, '0');
+        const g0 = rows[0]?.g0?.toString().padStart(5, '0') || '00000';
         const last2 = g0.slice(-2);
         return last2[0] === last2[1] ? [last2] : [last2, last2[1] + last2[0]];
       })(),
