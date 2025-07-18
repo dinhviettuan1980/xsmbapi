@@ -47,7 +47,7 @@ router.get('/api/classify-two-digit', async (req, res) => {
   try {
     const results = generateResults();
 
-    const specialsRes = await axios.get('http://localhost:3000/api/specials/recent');
+    const specialsRes = await axios.get('http://localhost:8001/api/specials/recent');
     const specials = specialsRes.data;
 
     const types = Object.keys(results).filter(key => Array.isArray(results[key]));

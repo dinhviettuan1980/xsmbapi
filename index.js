@@ -13,6 +13,8 @@ const combinationRoute = require('./combination');
 const combinationAdvancedRoute = require('./combination-advanced');
 const classifyRoute = require('./classify-two-digit');
 const specialsRoute = require('./specials');
+const verifyGoogleToken = require('./middlewares/authMiddleware');
+const getServerInfo = require('./serverInfo');
 
 const app = express();
 const PORT = process.env.PORT;
@@ -671,7 +673,7 @@ app.get('/api/checkCauLo', async (req, res) => {
 
 async function checkCauLo() {
   try {
-    const res = await axios.get('http://localhost:3000/api/tk-cau-ong-phong');
+    const res = await axios.get('http://localhost:8001/api/tk-cau-ong-phong');
     const data = res.data;
 
     if (
@@ -689,7 +691,7 @@ async function checkCauLo() {
     }
 
     // Cầu Pascal
-    const res2 = await axios.get('http://localhost:3000/api/tk-cau-lo-pascal');
+    const res2 = await axios.get('http://localhost:8001/api/tk-cau-lo-pascal');
     const data2 = res2.data;
 
     if (
@@ -707,7 +709,7 @@ async function checkCauLo() {
     }
 
     // Cầu lô rơi
-    const res3 = await axios.get('http://localhost:3000/api/tk-cau-lo-roi');
+    const res3 = await axios.get('http://localhost:8001/api/tk-cau-lo-roi');
     const data3 = res3.data;
 
     if (
@@ -752,9 +754,9 @@ cron.schedule('00 9 * * *', () => {
 async function check3CauLo() {
   try {
     const [res1, res2, res3] = await Promise.all([
-      axios.get('http://localhost:3000/api/tk-cau-ong-phong'),
-      axios.get('http://localhost:3000/api/tk-cau-lo-pascal'),
-      axios.get('http://localhost:3000/api/tk-cau-lo-roi'),
+      axios.get('http://localhost:8001/api/tk-cau-ong-phong'),
+      axios.get('http://localhost:8001/api/tk-cau-lo-pascal'),
+      axios.get('http://localhost:8001/api/tk-cau-lo-roi'),
     ]);
 
     const data1 = res1.data;
@@ -832,6 +834,25 @@ app.get('/enable', (req, res) => {
   } catch (err) {
     console.error('[ERROR]', err);
     res.status(500).send('failed to enable');
+  }
+});
+
+app.post('/api/login', (req, res) => {
+  res.status(200).send(JSON.stringify({status: 'success', token: '123456', error: ''}));
+});
+
+app.get('/api/me', verifyGoogleToken, (req, res) => {
+  const { name, email, picture } = req.user;
+  res.json({ name, email, picture });
+});
+
+app.get('/api/server-info', async (req, res) => {
+  try {
+    const info = await getServerInfo();
+    res.json(info);
+  } catch (err) {
+    console.error('Error getting server info:', err);
+    res.status(500).json({ error: 'Failed to retrieve server info' });
   }
 });
 
