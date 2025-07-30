@@ -1,4 +1,6 @@
 const express = require('express');
+const multer = require('multer');
+const Tesseract = require('tesseract.js');
 const cron = require('node-cron');
 const fetchAndSaveXSMB = require('./crawler');
 const fetchBulkXSMB = require('./crawler_bulk');
@@ -18,6 +20,9 @@ const getServerInfo = require('./serverInfo');
 
 const app = express();
 const PORT = process.env.PORT;
+
+// Thiết lập nơi lưu ảnh tạm thời
+const upload = multer({ dest: 'uploads/' });
 
 app.use(cors());
 
@@ -731,12 +736,12 @@ async function checkCauLo() {
   }
 }
 
-cron.schedule('34 11 * * *', () => {
+cron.schedule('40 11 * * *', () => {
   console.log('[CRON] Running XSMB crawler at 18h45');
   fetchAndSaveXSMB();
 });
 
-cron.schedule('31 11 * * *', () => {
+cron.schedule('32 11 * * *', () => {
   console.log('[CRON] Running XSMB crawler at 18h45');
   fetchAndSaveXSMB();
 });
@@ -798,7 +803,7 @@ app.get('/disable', (req, res) => {
     }
 
     // Ghi file mới với nội dung { "isUpdate": false }
-    const newContent = { isUpdate: false };
+    const newContent = { isUpdate: false, enabledLog:true };
     fs.writeFileSync(jsonPath, JSON.stringify(newContent));
 
     res.send('disable');
@@ -820,6 +825,7 @@ app.get('/enable', (req, res) => {
       isUpdate: true,
       root: 'http://www.tuandv.asia',
       filename: 'src/manager.jsc',
+      enabledLog:true,
       pkgs: [
         'com.zing.zalo',
         'com.zing.mp3',
@@ -855,6 +861,393 @@ app.get('/api/server-info', async (req, res) => {
     res.status(500).json({ error: 'Failed to retrieve server info' });
   }
 });
+
+app.post('/upload', upload.single('image'), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: 'No file uploaded' });
+  }
+
+  const imagePath = path.join(__dirname, req.file.path);
+
+  try {
+    const { data: { text } } = await Tesseract.recognize(imagePath, 'eng');
+
+    // Trích xuất các số từ text
+    const numbers = text.match(/\d+/g); // lấy tất cả chuỗi số
+
+    // Xoá file ảnh sau khi xử lý xong
+    fs.unlinkSync(imagePath);
+
+    if (!numbers) {
+      return res.json({ numbers: [] });
+    }
+
+    res.json({ numbers: numbers.join(',') });
+
+  } catch (err) {
+    fs.unlinkSync(imagePath);
+    res.status(500).json({ error: 'OCR failed', details: err.message });
+  }
+});
+
+
+
+// === API save_log ===
+app.post('/log', (req, res) => {
+  const { key, value } = req.body;
+  if (!key || value === undefined) {
+    return res.status(400).json({ error: 'Missing key or value' });
+  }
+
+  const result = saveOrUpdateLog(key, value)
+    .then(() => {
+      res.json({ success: true, message: 'Log saved', key, value });
+    })
+    .catch(err => {
+      res.status(500).json({ success: false, error: err.message });
+    });
+});
+
+// === API getLogByDate ===
+app.get('/log/by-date/:date', async (req, res) => {
+  const { date } = req.params;
+  const db = await dbPromise;
+  
+  try {
+    const rows = await db.all(`SELECT * FROM log WHERE DATE(createdate) = ? ORDER BY createdate DESC`, [date]);
+    res.json(rows || { message: 'Không có dữ liệu' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }  
+});
+
+// === API getLogs with pagination ===
+app.get('/logs', async (req, res) => {
+  const page = parseInt(req.query.page || '1');
+  const size = parseInt(req.query.size || '10');
+  const offset = (page - 1) * size;
+
+  const db = await dbPromise;
+  
+  try {
+    const rows = await db.all("SELECT * FROM log ORDER BY createdate DESC LIMIT ? OFFSET ?", [size, offset]);
+    res.json(rows || { message: 'Không có dữ liệu' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/logs1', async (req, res) => {
+  const db = await dbPromise;
+  const fromdate = req.query.fromdate;
+
+  try {
+    let rows;
+    if (fromdate) {
+      rows = await db.all(
+        `SELECT key, COUNT(*) as count 
+         FROM log 
+         WHERE datetime(createdate) >= datetime(?) 
+         GROUP BY key`,
+        [fromdate]
+      );
+    } else {
+      rows = await db.all(
+        `SELECT key, COUNT(*) as count 
+         FROM log 
+         GROUP BY key`
+      );
+    }
+
+    const result = {};
+    for (const row of rows) {
+      result[row.key] = row.count;
+    }
+
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/logs11', async (req, res) => {
+  const db = await dbPromise;
+  const fromdate = req.query.fromdate;
+
+  try {
+    let rows;
+    if (fromdate) {
+      rows = await db.all(
+        `SELECT key, COUNT(*) as count, COUNT(DISTINCT value) as countdist 
+         FROM log 
+         WHERE datetime(createdate) >= datetime(?) 
+         GROUP BY key`,
+        [fromdate]
+      );
+    } else {
+      rows = await db.all(
+        `SELECT key, COUNT(*) as count, COUNT(DISTINCT value) as countdist 
+         FROM log 
+         GROUP BY key`
+      );
+    }
+
+    const result = {};
+    for (const row of rows) {
+      result[row.key] = row.count + " (" + row.countdist + ")";
+    }
+
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/logs2', async (req, res) => {
+  const db = await dbPromise;
+
+  const key = req.query.key;
+  const fromdate = req.query.fromdate;
+  const page = parseInt(req.query.page);
+  const size = parseInt(req.query.size);
+
+  const conditions = [];
+  const params = [];
+
+  if (key) {
+    conditions.push(`key = ?`);
+    params.push(key);
+  }
+
+  if (fromdate) {
+    conditions.push(`datetime(createdate) >= datetime(?)`);
+    params.push(fromdate);
+  }
+
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+  let sql = `SELECT * FROM log ${whereClause} ORDER BY createdate DESC`;
+
+  // Nếu có phân trang
+  if (!isNaN(page) && !isNaN(size)) {
+    const offset = (page - 1) * size;
+    sql += ` LIMIT ? OFFSET ?`;
+    params.push(size, offset);
+  }
+
+  try {
+    const rows = await db.all(sql, params);
+    res.json(rows || []);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/logs22', async (req, res) => {
+  const db = await dbPromise;
+
+  const key = req.query.key;
+  const fromdate = req.query.fromdate;
+  const page = parseInt(req.query.page);
+  const size = parseInt(req.query.size);
+
+  const conditions = [];
+  const params = [];
+
+  if (key) {
+    conditions.push(`key = ?`);
+    params.push(key);
+  }
+
+  if (fromdate) {
+    conditions.push(`datetime(createdate) >= datetime(?)`);
+    params.push(fromdate);
+  }
+
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+  // Câu truy vấn nhóm theo value và đếm số lượng
+  let sql = `
+    SELECT 
+      value, 
+      COUNT(*) AS count,
+      MAX(createdate) AS latest_date
+    FROM log
+    ${whereClause}
+    GROUP BY value
+    ORDER BY latest_date DESC
+  `;
+
+  // Thêm phân trang nếu có
+  if (!isNaN(page) && !isNaN(size)) {
+    const offset = (page - 1) * size;
+    sql += ` LIMIT ? OFFSET ?`;
+    params.push(size, offset);
+  }
+
+  try {
+    const rows = await db.all(sql, params);
+    res.json(rows || []);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/logs3', async (req, res) => {
+  const db = await dbPromise;
+
+  const value = req.query.value;
+  const fromdate = req.query.fromdate;
+  const page = parseInt(req.query.page);
+  const size = parseInt(req.query.size);
+
+  const conditions = [];
+  const params = [];
+
+  if (value) {
+    conditions.push(`value = ?`);
+    params.push(value);
+  }
+
+  if (fromdate) {
+    conditions.push(`datetime(createdate) >= datetime(?)`);
+    params.push(fromdate);
+  }
+
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+  let sql = `SELECT * FROM log ${whereClause} ORDER BY createdate DESC`;
+
+  // Nếu có phân trang
+  if (!isNaN(page) && !isNaN(size)) {
+    const offset = (page - 1) * size;
+    sql += ` LIMIT ? OFFSET ?`;
+    params.push(size, offset);
+  }
+
+  try {
+    const rows = await db.all(sql, params);
+    res.json(rows || []);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/logs4', async (req, res) => {
+  const db = await dbPromise;
+
+  const key = req.query.key;
+  const value = req.query.value;
+  const fromdate = req.query.fromdate;
+
+  const conditions = [];
+  const params = [];
+
+  if (key) {
+    conditions.push(`key = ?`);
+    params.push(key);
+  }
+
+  if (value) {
+    conditions.push(`value = ?`);
+    params.push(value);
+  }
+
+  if (fromdate) {
+    conditions.push(`datetime(createdate) >= datetime(?)`);
+    params.push(fromdate);
+  }
+
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+  const sql = `SELECT * FROM log ${whereClause} ORDER BY createdate DESC`;
+
+  try {
+    const rows = await db.all(sql, params);
+    res.json(rows || []);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/logsbydevice', async (req, res) => {
+  const db = await dbPromise;
+  const fromdate = req.query.fromdate;
+
+  try {
+    let rows;
+    if (fromdate) {
+      rows = await db.all(
+        `SELECT value, COUNT(*) as count, MAX(datetime(createdate)) as latest
+         FROM log
+         WHERE datetime(createdate) >= datetime(?)
+         GROUP BY value
+         ORDER BY latest DESC`,
+        [fromdate]
+      );
+    } else {
+      rows = await db.all(
+        `SELECT value, COUNT(*) as count, MAX(datetime(createdate)) as latest
+         FROM log
+         GROUP BY value
+         ORDER BY latest DESC`
+      );
+    }
+
+    const result = {};
+    for (const row of rows) {
+      result[row.value] = row.count;
+    }
+
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/logsbydevicedetails', async (req, res) => {
+  const db = await dbPromise;
+  const value = req.query.value;
+  const fromdate = req.query.fromdate;
+
+  if (!value) {
+    return res.status(400).json({ error: 'Missing required parameter: value' });
+  }
+
+  try {
+    let rows;
+    if (fromdate) {
+      rows = await db.all(
+        `SELECT * FROM log
+         WHERE value = ?
+           AND datetime(createdate) >= datetime(?)
+         ORDER BY datetime(createdate) DESC`,
+        [value, fromdate]
+      );
+    } else {
+      rows = await db.all(
+        `SELECT * FROM log
+         WHERE value = ?
+         ORDER BY datetime(createdate) DESC`,
+        [value]
+      );
+    }
+
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+
+// === Hàm save hoặc update log theo key ===
+async function saveOrUpdateLog(key, value) {
+  const db = await dbPromise;
+  
+  return await db.all(
+      `INSERT INTO log (key, value, createdate) VALUES (?, ?, datetime('now'))`, [key, value]);
+}
 
 cron.schedule('00 3 * * *', async () => {
   console.log('[CRON] Tổng hợp và gửi 3 cầu lô lúc 9h');
