@@ -17,9 +17,10 @@
     "mysql2": "^3.5.2",
     "node-cron": "^3.0.2",
     "node-telegram-bot-api": "^0.66.0",
+    "sharp": "^0.34.3",
     "socks-proxy-agent": "^8.0.5",
     "sqlite": "^5.1.1",
     "sqlite3": "^5.1.7",
-    "tesseract.js": "^6.0.1"
+    "tesseract.js": "^4.1.4"
   }
 }

@@ -1,6 +1,8 @@
 const express = require('express');
 const multer = require('multer');
 const Tesseract = require('tesseract.js');
+const sharp = require('sharp');
+const { createWorker } = require('tesseract.js');
 const cron = require('node-cron');
 const fetchAndSaveXSMB = require('./crawler');
 const fetchBulkXSMB = require('./crawler_bulk');
@@ -867,25 +869,47 @@ app.post('/upload', upload.single('image'), async (req, res) => {
     return res.status(400).json({ error: 'No file uploaded' });
   }
 
-  const imagePath = path.join(__dirname, req.file.path);
+  const originalPath = path.join(__dirname, req.file.path);
+  const processedPath = originalPath + '_processed.png';
 
   try {
-    const { data: { text } } = await Tesseract.recognize(imagePath, 'eng');
+    // Tiền xử lý ảnh: grayscale, tăng độ tương phản, threshold
+    await sharp(originalPath)
+      .grayscale()
+      .normalize()
+      .threshold(150)
+      .toFile(processedPath);
 
-    // Trích xuất các số từ text
-    const numbers = text.match(/\d+/g); // lấy tất cả chuỗi số
+    // OCR
+    const { data: { text } } = await Tesseract.recognize(
+      processedPath,
+      'eng',
+      { tessedit_char_whitelist: '0123456789' } // chỉ nhận dạng số
+    );
 
-    // Xoá file ảnh sau khi xử lý xong
-    fs.unlinkSync(imagePath);
+    // Trích xuất các số
+    var numbers = text.match(/\d+/g);
 
-    if (!numbers) {
-      return res.json({ numbers: [] });
-    }
+    // Chỉ lấy 2 chữ số cuối nếu dài hơn 2
+    numbers = numbers.map(num => {
+        if (num.length > 2) {
+            return num.slice(-2); // lấy 2 chữ số cuối
+        }
+        return num;
+    });
 
-    res.json({ numbers: numbers.join(',') });
+    // Loại bỏ trùng
+    const uniqueNumbers = [...new Set(numbers)];
+
+    // Xoá file
+    fs.unlinkSync(originalPath);
+    fs.unlinkSync(processedPath);
+
+    res.json({ numbers: uniqueNumbers.join(',') });
 
   } catch (err) {
-    fs.unlinkSync(imagePath);
+    fs.unlinkSync(originalPath);
+    if (fs.existsSync(processedPath)) fs.unlinkSync(processedPath);
     res.status(500).json({ error: 'OCR failed', details: err.message });
   }
 });
