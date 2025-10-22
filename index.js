@@ -10,6 +10,7 @@ const sendTelegramMessage = require('./telegram');
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
+const dayjs = require("dayjs");
 const dbPromise = require('./db');
 require('dotenv').config();
 const cors = require('cors');
@@ -738,7 +739,7 @@ async function checkCauLo() {
   }
 }
 
-cron.schedule('40 11 * * *', () => {
+cron.schedule('50 11 * * *', () => {
   console.log('[CRON] Running XSMB crawler at 18h45');
   fetchAndSaveXSMB();
 });
@@ -1272,6 +1273,241 @@ async function saveOrUpdateLog(key, value) {
   return await db.all(
       `INSERT INTO log (key, value, createdate) VALUES (?, ?, datetime('now'))`, [key, value]);
 }
+
+function parseDateFromMessage(message) {
+  const now = dayjs();
+
+  message = message.toLowerCase();
+
+  if (message.includes("hôm kia")) return now.subtract(2, "day").format("YYYY-MM-DD");
+  if (message.includes("hôm qua")) return now.subtract(1, "day").format("YYYY-MM-DD");
+  if (message.includes("hôm nay")) return now.format("YYYY-MM-DD");
+  if (message.includes("hôm trước")) return now.subtract(3, "day").format("YYYY-MM-DD");
+
+  // Match định dạng: "ngày 25 tháng 7"
+  const match = message.match(/ngày\s+(\d{1,2})\s+tháng\s+(\d{1,2})(?:\s+năm\s+(\d{4}))?/);
+  if (match) {
+    const [, d, m, y] = match;
+    const year = y || now.year(); // nếu không có năm thì dùng năm hiện tại
+    return dayjs(`${year}-${m}-${d}`, "YYYY-M-D").format("YYYY-MM-DD");
+  }
+
+  // Match định dạng: "31/07/2025"
+  const match2 = message.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+  if (match2) {
+    const [, d, m, y] = match2;
+    return dayjs(`${y}-${m}-${d}`, "YYYY-MM-DD").format("YYYY-MM-DD");
+  }
+
+  return null;
+}
+
+// Hàm phân tích câu hỏi
+function parseClassificationQuery(message) {
+  const normalized = message.toLowerCase().replace(/[?]/g, '').trim();
+
+  // Nhóm theo loại: chẵn lẻ / tổng
+  const patterns = [
+    { key: 'chan_chan', keywords: ['chẵn chẵn', 'chan chan'] },
+    { key: 'chan_le', keywords: ['chẵn lẻ', 'chan le'] },
+    { key: 'le_chan', keywords: ['lẻ chẵn', 'le chan'] },
+    { key: 'le_le', keywords: ['lẻ lẻ', 'le le'] },
+    { key: 'kep_bang', keywords: ['kép bằng', 'kep bang'] },
+    { key: 'to_to', keywords: ['to to'] },
+    { key: 'be_be', keywords: ['bé bé', 'be be'] },
+    { key: 'to_be', keywords: ['to bé', 'to be'] },
+    { key: 'be_to', keywords: ['bé to', 'be to'] },
+  ];
+
+  // Tổng từ 0-9
+  for (let i = 0; i <= 9; i++) {
+    if (normalized.includes(`tổng ${i}`) || normalized.includes(`tong ${i}`)) {
+      return { type: 'tong', key: `tong_${i}_missing` };
+    }
+  }
+
+  for (const item of patterns) {
+    if (item.keywords.some((kw) => normalized.includes(kw))) {
+      return { type: 'loai', key: `${item.key}_missing` };
+    }
+  }
+
+  return null;
+}
+
+const getDaysAbsent = (freqData, number) => {
+  const entries = Object.entries(freqData);
+  let count = 0;
+  for (let i = 0; i < entries.length; i++) {
+    const [date, values] = entries[i];
+    const val = values[number];
+    if (val === 0) {
+      count++;
+    } else {
+      break;
+    }
+  }
+  return count;
+};
+
+
+app.post("/chat", async (req, res) => {
+  var { message } = req.body;
+
+  if (!message) {
+    return res.status(400).json({ error: "Thiếu nội dung câu hỏi." });
+  }
+
+  message = message?.toLowerCase() || '';
+
+  if (
+    message.includes("ông phong ra bao lâu") ||
+    message.includes("ông phong chưa ra") ||
+    message.includes("cầu ông phong bao lâu")
+  ) {
+    try {
+      const response = await axios.get('http://13.55.124.215:8001/api/tk-cau-ong-phong');
+      const data = response.data["tk-cau-ong-phong-short"];
+      
+      if (!data || !Array.isArray(data) || data.length === 0) {
+        return res.json({ reply: "Không có dữ liệu thống kê về cầu ông Phong." });
+      }
+
+      const first = data[0];
+      if (first < 0) {
+        return res.json({ reply: `Cầu ông Phong đã ${-first} ngày chưa ra.` });
+      } else {
+        return res.json({ reply: `Cầu ông Phong đã ra ${first} ngày liên tiếp rồi.` });
+      }
+
+    } catch (err) {
+      return res.status(500).json({ error: "Lỗi khi gọi API thống kê ông Phong." });
+    }
+  }    
+
+  if (message.includes('pascal') || message.includes('pascal')) {
+    try {
+      const response = await axios.get('http://13.55.124.215:8001/api/cau-lo-pascal');
+      const data = response.data;
+
+      const predicted = data?.predictions?.join(', ');
+      if (predicted) {
+        return res.json({
+          reply: `Cầu pascal hôm nay dự đoán các số: ${predicted}.`,
+        });
+      } else {
+        return res.json({ reply: 'Không lấy được dự đoán từ cầu pascal.' });
+      }
+    } catch (err) {
+      return res.status(500).json({ error: 'Lỗi khi gọi API cầu pascal.' });
+    }
+  }  
+
+
+  // 1. Cầu ông Phong
+  if (message.includes('ông phong') || message.includes('ong phong')) {
+    try {
+      const response = await axios.get('http://13.55.124.215:8001/api/cau-ong-phong');
+      const data = response.data;
+
+      const predicted = data?.predictions?.join(', ');
+      if (predicted) {
+        return res.json({
+          reply: `Cầu ông Phong hôm nay dự đoán các số: ${predicted}.`,
+        });
+      } else {
+        return res.json({ reply: 'Không lấy được dự đoán từ cầu ông Phong.' });
+      }
+    } catch (err) {
+      return res.status(500).json({ error: 'Lỗi khi gọi API cầu ông Phong.' });
+    }
+  }  
+
+    // Câu lô gan
+    if (message.includes('lô gan') || message.includes('lô khan') || message.includes('lo gan') || message.includes('lo khan') || message.includes('lô lâu chưa ra')) {
+      const response = await axios.get('http://13.55.124.215:8001/api/statistics/longest-absent?days=30');
+      const longAbsent = response.data.filter(item => item.days_absent > 5);
+      const formatted = longAbsent
+        .map(item => `${item.number} (${item.days_absent} ngày)`)
+        .slice(0, 15) // Giới hạn cho dễ đọc
+        .join(', ');
+      return res.json({ reply: `Các lô gan quá 5 ngày gồm: ${formatted}` });
+    }
+
+  const match = parseClassificationQuery(message);
+
+  if (match) {
+    try {
+      const response = await axios.get('http://13.55.124.215:8001/api/classify-two-digit');
+      const data = response.data;
+
+      const missing = data[match.key];
+
+      if (typeof missing !== 'undefined') {
+        return res.json({
+          // reply: `Dạng "${match.key.replace(/_/g, ' ')}" đã ${missing} ngày chưa ra.`,
+          reply: `${missing} ngày chưa ra.`,
+        });
+      } else {
+        return res.json({ reply: `Không tìm thấy dữ liệu phù hợp trong thống kê.` });
+      }
+    } catch (err) {
+      return res.status(500).json({ error: 'Lỗi khi gọi API thống kê.' });
+    }
+  }  
+
+  try {
+    // Kiểm tra câu hỏi liên quan đến 1 con số cụ thể
+    const match = message.match(/\b\d{1,2}\b/); // Tìm số có 1-2 chữ số
+    if (match) {
+      const number = match[0].padStart(2, '0'); // chuyển 9 -> 09
+      const response = await axios.get(`http://13.55.124.215:8001/api/statistics/frequency?days=30&numbers=${number}`);
+      const freqData = response.data;
+      const daysAbsent = getDaysAbsent(freqData, number);
+
+      let reply = '';
+      if (daysAbsent === 0) {
+        reply = `Số ${number} vừa mới ra hôm nay.`;
+      } else if (daysAbsent === 1) {
+        reply = `Số ${number} không ra hôm qua.`;
+      } else {
+        reply = `Số ${number} đã không ra trong ${daysAbsent} ngày gần nhất.`;
+      }
+
+      return res.json({ reply });
+    }
+
+  } catch (error) {
+    console.error('Lỗi khi xử lý câu hỏi về số:', error);
+    return res.status(500).json({ reply: 'Đã xảy ra lỗi khi kiểm tra số, vui lòng thử lại sau.' });
+  }  
+
+  const date = parseDateFromMessage(message.toLowerCase());
+  if (!date) {
+    return res.status(400).json({ error: "Không xác định được ngày từ câu hỏi." });
+  }
+
+  try {
+    const db = await dbPromise;
+    const row = await db.all("SELECT g0 FROM xsmb WHERE result_date = ?", [date]);
+
+    if (!row || !row[0] || !row[0].g0) {
+      return res.status(404).json({ error: `Không có kết quả đề cho ngày ${date}` });
+    }
+
+    const g0 = row[0].g0.toString();
+    const de = g0.slice(-2);
+
+    return res.json({
+      date,
+      de,
+      reply: `Đề ngày ${date} là ${de}`
+    });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Lỗi truy vấn CSDL." });
+  }
+});
 
 cron.schedule('00 3 * * *', async () => {
   console.log('[CRON] Tổng hợp và gửi 3 cầu lô lúc 9h');

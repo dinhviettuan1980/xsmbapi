@@ -3,7 +3,7 @@ const cheerio = require('cheerio');
 const dbPromise = require('./db');
 
 function splitByLength(text, count, length) {
-  return text.match(new RegExp(`\d{${length}}`, 'g'))?.slice(0, count).join(',') || '';
+  return text.match(new RegExp(`\\d{${length}}`, 'g'))?.slice(0, count).join(',') || '';
 }
 
 async function fetchBulkXSMB() {
@@ -15,32 +15,50 @@ async function fetchBulkXSMB() {
     });
 
     const $ = cheerio.load(data);
-    const tables = $('table');
 
-    for (const table of tables) {
-      const $table = $(table);
-      const heading = $table.find('tr').first().text();
-      const match = heading.match(/ngày (\d{2})-(\d{2})-(\d{4})/);
-      if (!match) continue;
+    // duyệt từng block kết quả
+    $('div.result_div#result_mb').each(async (_, el) => {
+      // LẤY NGÀY: trong page.html ngày nằm tại span#result_date
+      const dateText = $(el).find('#result_date').text().trim();
+      if (!dateText) return;
+      // debug nhanh:
+      // console.log('DEBUG dateText=', dateText);
+
+      const match = dateText.match(/(\d{2})[\/\-](\d{2})[\/\-](\d{4})/);
+      if (!match) return;
 
       const result_date = `${match[3]}-${match[2]}-${match[1]}`;
       const result = { result_date };
 
-      $table.find('tr').slice(1).each((_, row) => {
-        const cells = $(row).find('td');
-        const label = $(cells[0]).text().trim();
-        const digits = $(cells).slice(1).text().replace(/[^\d]/g, '');
+      // duyệt từng hàng trong bảng kết quả
+      $(el).find('#result_tab_mb tbody tr').each((_, row) => {
+        const tds = $(row).find('td');
+        if (tds.length < 2) return;
+        const label = $(tds[0]).text().trim().replace(/\s+/g, ' ');
+        // value có thể nằm trong div bên trong td (ví dụ id="rs_0_0"), hoặc text trực tiếp
+        const rawValue = $(tds[1]).text().trim();
+        const digits = rawValue.replace(/[^0-9]/g, ''); // chỉ lấy số liên tiếp
 
-        if (label.includes('Đặc biệt')) result.g0 = splitByLength(digits, 1, 5);
-        else if (label.includes('Giải nhất')) result.g1 = splitByLength(digits, 1, 5);
-        else if (label.includes('Giải nhì')) result.g2 = splitByLength(digits, 2, 5);
-        else if (label.includes('Giải ba')) result.g3 = splitByLength(digits, 6, 5);
-        else if (label.includes('Giải tư')) result.g4 = splitByLength(digits, 4, 4);
-        else if (label.includes('Giải năm')) result.g5 = splitByLength(digits, 6, 4);
-        else if (label.includes('Giải sáu')) result.g6 = splitByLength(digits, 3, 3);
-        else if (label.includes('Giải bảy')) result.g7 = splitByLength(digits, 4, 2);
+        if (/Đặc biệt/i.test(label)) {
+          result.g0 = splitByLength(digits, 1, 5);
+        } else if (/Giải nhất/i.test(label)) {
+          result.g1 = splitByLength(digits, 1, 5);
+        } else if (/Giải nhì/i.test(label)) {
+          result.g2 = splitByLength(digits, 2, 5);
+        } else if (/Giải ba/i.test(label)) {
+          result.g3 = splitByLength(digits, 6, 5);
+        } else if (/Giải tư/i.test(label)) {
+          result.g4 = splitByLength(digits, 4, 4);
+        } else if (/Giải năm/i.test(label)) {
+          result.g5 = splitByLength(digits, 6, 4);
+        } else if (/Giải sáu/i.test(label)) {
+          result.g6 = splitByLength(digits, 3, 3);
+        } else if (/Giải bảy/i.test(label)) {
+          result.g7 = splitByLength(digits, 4, 2);
+        }
       });
 
+      // lưu nếu có g0
       if (result.g0) {
         const exists = await db.get('SELECT 1 FROM xsmb WHERE result_date = ?', [result.result_date]);
 
@@ -66,8 +84,10 @@ async function fetchBulkXSMB() {
         }
 
         console.log(`✅ Saved ${result.result_date}`);
+      } else {
+        console.log(`ℹ️ Skipped ${result.result_date} (no g0 parsed)`);
       }
-    }
+    });
   } catch (err) {
     console.error('[ERROR]', err.message);
   }
