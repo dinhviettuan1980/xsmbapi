@@ -1366,7 +1366,7 @@ app.post("/chat", async (req, res) => {
     message.includes("cầu ông phong bao lâu")
   ) {
     try {
-      const response = await axios.get('http://13.55.124.215:8001/api/tk-cau-ong-phong');
+      const response = await axios.get('http://localhost:8001/api/tk-cau-ong-phong');
       const data = response.data["tk-cau-ong-phong-short"];
       
       if (!data || !Array.isArray(data) || data.length === 0) {
@@ -1387,7 +1387,7 @@ app.post("/chat", async (req, res) => {
 
   if (message.includes('pascal') || message.includes('pascal')) {
     try {
-      const response = await axios.get('http://13.55.124.215:8001/api/cau-lo-pascal');
+      const response = await axios.get('http://localhost:8001/api/cau-lo-pascal');
       const data = response.data;
 
       const predicted = data?.predictions?.join(', ');
@@ -1407,7 +1407,7 @@ app.post("/chat", async (req, res) => {
   // 1. Cầu ông Phong
   if (message.includes('ông phong') || message.includes('ong phong')) {
     try {
-      const response = await axios.get('http://13.55.124.215:8001/api/cau-ong-phong');
+      const response = await axios.get('http://localhost:8001/api/cau-ong-phong');
       const data = response.data;
 
       const predicted = data?.predictions?.join(', ');
@@ -1425,7 +1425,7 @@ app.post("/chat", async (req, res) => {
 
     // Câu lô gan
     if (message.includes('lô gan') || message.includes('lô khan') || message.includes('lo gan') || message.includes('lo khan') || message.includes('lô lâu chưa ra')) {
-      const response = await axios.get('http://13.55.124.215:8001/api/statistics/longest-absent?days=30');
+      const response = await axios.get('http://localhost:8001/api/statistics/longest-absent?days=30');
       const longAbsent = response.data.filter(item => item.days_absent > 5);
       const formatted = longAbsent
         .map(item => `${item.number} (${item.days_absent} ngày)`)
@@ -1438,7 +1438,7 @@ app.post("/chat", async (req, res) => {
 
   if (match) {
     try {
-      const response = await axios.get('http://13.55.124.215:8001/api/classify-two-digit');
+      const response = await axios.get('http://localhost:8001/api/classify-two-digit');
       const data = response.data;
 
       const missing = data[match.key];
@@ -1461,7 +1461,7 @@ app.post("/chat", async (req, res) => {
     const match = message.match(/\b\d{1,2}\b/); // Tìm số có 1-2 chữ số
     if (match) {
       const number = match[0].padStart(2, '0'); // chuyển 9 -> 09
-      const response = await axios.get(`http://13.55.124.215:8001/api/statistics/frequency?days=30&numbers=${number}`);
+      const response = await axios.get(`http://localhost:8001/api/statistics/frequency?days=30&numbers=${number}`);
       const freqData = response.data;
       const daysAbsent = getDaysAbsent(freqData, number);
 
