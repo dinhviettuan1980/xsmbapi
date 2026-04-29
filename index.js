@@ -795,6 +795,15 @@ async function startLiveCrawl() {
 // Bắt đầu live crawl lúc 18h15 giờ VN (11h15 UTC)
 cron.schedule('15 11 * * *', startLiveCrawl);
 
+// Dừng live crawl lúc 18h45 giờ VN (11h45 UTC) dù chưa đủ 27 giải
+cron.schedule('45 11 * * *', () => {
+  if (liveInterval) {
+    clearInterval(liveInterval);
+    liveInterval = null;
+    console.log('[LIVE] Dừng live crawl lúc 18h45, hết giờ quay.');
+  }
+});
+
 cron.schedule('00 9 * * *', () => {
   console.log('[CRON] Check cau lo at 16h');
   checkCauLo();
