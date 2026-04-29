@@ -3,7 +3,20 @@ const cheerio = require('cheerio');
 const dbPromise = require('./db');
 const sendTelegramMessage = require('./telegram');
 
-async function fetchAndSaveXSMB() {
+const PRIZE_EXPECTED = { G0: 1, G1: 1, G2: 2, G3: 6, G4: 4, G5: 6, G6: 3, G7: 4 };
+
+function countFilledPrizes(result) {
+  let count = 0;
+  for (const key of Object.keys(PRIZE_EXPECTED)) {
+    if (result[key]) {
+      count += result[key].split(',').map(s => s.trim()).filter(Boolean).length;
+    }
+  }
+  return count;
+}
+
+async function fetchAndSaveXSMB(options = {}) {
+  const { silent = false } = options;
   try {
     const db = await dbPromise;
 
@@ -43,20 +56,26 @@ async function fetchAndSaveXSMB() {
       );
     }
 
-    const message = `🎯 KQ XSMB ${dateText}\n`
-      + `Đặc biệt: ${result.G0}\n`
-      + `Giải nhất: ${result.G1}\n`
-      + `Giải nhì: ${result.G2}\n`
-      + `Giải ba: ${result.G3}\n`
-      + `Giải tư: ${result.G4}\n`
-      + `Giải năm: ${result.G5}\n`
-      + `Giải sáu: ${result.G6}\n`
-      + `Giải bảy: ${result.G7}`;
+    const filled = countFilledPrizes(result);
 
-    await sendTelegramMessage(message);
-    console.log(`[OK] Đã lưu kết quả XSMB ngày ${dateText}`);
+    if (!silent) {
+      const message = `🎯 KQ XSMB ${dateText}\n`
+        + `Đặc biệt: ${result.G0}\n`
+        + `Giải nhất: ${result.G1}\n`
+        + `Giải nhì: ${result.G2}\n`
+        + `Giải ba: ${result.G3}\n`
+        + `Giải tư: ${result.G4}\n`
+        + `Giải năm: ${result.G5}\n`
+        + `Giải sáu: ${result.G6}\n`
+        + `Giải bảy: ${result.G7}`;
+      await sendTelegramMessage(message);
+    }
+
+    console.log(`[OK] Đã lưu kết quả XSMB ngày ${dateText} (${filled}/27)`);
+    return filled;
   } catch (err) {
     console.error('[ERROR]', err.message);
+    return 0;
   }
 }
 

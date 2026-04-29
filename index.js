@@ -116,6 +116,35 @@ app.get('/api/history/latest', async (req, res) => {
   }
 });
 
+app.get('/api/today-live', async (req, res) => {
+  const db = await dbPromise;
+  const today = dayjs().utcOffset(7).format('YYYY-MM-DD');
+
+  try {
+    const row = await db.get('SELECT * FROM xsmb WHERE result_date = ?', [today]);
+
+    let filledCount = 0;
+    const prizes = {};
+
+    for (const [key, expected] of Object.entries(PRIZE_EXPECTED)) {
+      const val = row ? row[key] : null;
+      const values = val ? val.split(',').map(s => s.trim()).filter(Boolean) : [];
+      filledCount += values.length;
+      prizes[key] = { values, expected, complete: values.length >= expected };
+    }
+
+    res.json({
+      result_date: today,
+      isLive: liveInterval !== null,
+      isComplete: filledCount >= TOTAL_PRIZES,
+      filledCount,
+      prizes,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/crawl', async (req, res) => {
   try {
     await fetchAndSaveXSMB();
@@ -739,20 +768,32 @@ async function checkCauLo() {
   }
 }
 
-cron.schedule('50 11 * * *', () => {
-  console.log('[CRON] Running XSMB crawler at 18h45');
-  fetchAndSaveXSMB();
-});
+const PRIZE_EXPECTED = { g0: 1, g1: 1, g2: 2, g3: 6, g4: 4, g5: 6, g6: 3, g7: 4 };
+const TOTAL_PRIZES = 27;
 
-cron.schedule('32 11 * * *', () => {
-  console.log('[CRON] Running XSMB crawler at 18h45');
-  fetchAndSaveXSMB();
-});
+let liveInterval = null;
 
-cron.schedule('29 11 * * *', () => {
-  console.log('[CRON] Running XSMB crawler at 18h45');
-  fetchAndSaveXSMB();
-});
+async function startLiveCrawl() {
+  if (liveInterval) return;
+  console.log('[LIVE] Bắt đầu live crawl XSMB...');
+
+  liveInterval = setInterval(async () => {
+    try {
+      const filled = await fetchAndSaveXSMB({ silent: true });
+      if (filled >= TOTAL_PRIZES) {
+        clearInterval(liveInterval);
+        liveInterval = null;
+        console.log('[LIVE] Đủ 27 giải, dừng live crawl.');
+        await fetchAndSaveXSMB();
+      }
+    } catch (err) {
+      console.error('[LIVE ERROR]', err.message);
+    }
+  }, 1000);
+}
+
+// Bắt đầu live crawl lúc 18h15 giờ VN (11h15 UTC)
+cron.schedule('15 11 * * *', startLiveCrawl);
 
 cron.schedule('00 9 * * *', () => {
   console.log('[CRON] Check cau lo at 16h');
