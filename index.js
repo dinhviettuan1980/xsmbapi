@@ -772,22 +772,30 @@ const PRIZE_EXPECTED = { g0: 1, g1: 1, g2: 2, g3: 6, g4: 4, g5: 6, g6: 3, g7: 4 
 const TOTAL_PRIZES = 27;
 
 let liveInterval = null;
+let liveFetchInProgress = false;
 
 async function startLiveCrawl() {
-  if (liveInterval) return;
-  console.log('[LIVE] Bắt đầu live crawl XSMB...');
+  if (liveInterval) {
+    console.log('[LIVE] Đã đang chạy, bỏ qua.');
+    return;
+  }
+  console.log('[LIVE] Bắt đầu live crawl XSMB lúc', new Date().toISOString());
 
   liveInterval = setInterval(async () => {
+    if (liveFetchInProgress) return; // bỏ qua tick nếu lần trước chưa xong
+    liveFetchInProgress = true;
     try {
       const filled = await fetchAndSaveXSMB({ silent: true });
       if (filled >= TOTAL_PRIZES) {
         clearInterval(liveInterval);
         liveInterval = null;
-        console.log('[LIVE] Đủ 27 giải, dừng live crawl.');
+        console.log('[LIVE] Đủ 27 giải, dừng live crawl lúc', new Date().toISOString());
         await fetchAndSaveXSMB();
       }
     } catch (err) {
       console.error('[LIVE ERROR]', err.message);
+    } finally {
+      liveFetchInProgress = false;
     }
   }, 1000);
 }

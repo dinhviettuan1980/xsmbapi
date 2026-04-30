@@ -17,21 +17,39 @@ function countFilledPrizes(result) {
 
 async function fetchAndSaveXSMB(options = {}) {
   const { silent = false } = options;
+  const tag = silent ? '[LIVE]' : '[CRAWL]';
   try {
     const db = await dbPromise;
 
-    const { data } = await axios.get('https://ketqua04.net', {
-      headers: { 'User-Agent': 'Mozilla/5.0' }
-    });
+    console.log(`${tag} Fetching ketqua04.net...`);
+    let response;
+    try {
+      response = await axios.get('https://ketqua04.net', {
+        headers: { 'User-Agent': 'Mozilla/5.0' },
+        timeout: 10000,
+      });
+    } catch (fetchErr) {
+      console.error(`${tag} HTTP request failed: ${fetchErr.message}`);
+      return 0;
+    }
 
-    const $ = cheerio.load(data);
+    console.log(`${tag} HTTP ${response.status}, body size: ${response.data.length} bytes`);
+
+    const $ = cheerio.load(response.data);
     const rawDate = $('#result_date').text().trim();
+    console.log(`${tag} #result_date text: "${rawDate}"`);
+
     const dateMatch = rawDate.match(/(\d{1,2})-(\d{1,2})-(\d{4})/);
-    if (!dateMatch) throw new Error("Không lấy được ngày hợp lệ");
+    if (!dateMatch) {
+      console.error(`${tag} Cannot parse date from: "${rawDate}"`);
+      return 0;
+    }
 
     const dateText = `${dateMatch[3]}-${dateMatch[2].padStart(2, '0')}-${dateMatch[1].padStart(2, '0')}`;
-    const result = {};
+    console.log(`${tag} Date: ${dateText}`);
 
+    const result = {};
+    const prizeSummary = [];
     for (let i = 0; i <= 7; i++) {
       const values = [];
       $(`div[id^="rs_${i}_"]`).each((_, el) => {
@@ -39,7 +57,9 @@ async function fetchAndSaveXSMB(options = {}) {
         if (val) values.push(val);
       });
       result[`G${i}`] = values.join(',');
+      prizeSummary.push(`g${i}=${values.length}/${PRIZE_EXPECTED[`G${i}`]}[${values.join('|')}]`);
     }
+    console.log(`${tag} Prizes: ${prizeSummary.join(' ')}`);
 
     const existing = await db.get('SELECT 1 FROM xsmb WHERE result_date = ?', [dateText]);
 
@@ -57,6 +77,7 @@ async function fetchAndSaveXSMB(options = {}) {
     }
 
     const filled = countFilledPrizes(result);
+    console.log(`${tag} Saved ${dateText} — filled: ${filled}/27`);
 
     if (!silent) {
       const message = `🎯 KQ XSMB ${dateText}\n`
@@ -71,10 +92,9 @@ async function fetchAndSaveXSMB(options = {}) {
       await sendTelegramMessage(message);
     }
 
-    console.log(`[OK] Đã lưu kết quả XSMB ngày ${dateText} (${filled}/27)`);
     return filled;
   } catch (err) {
-    console.error('[ERROR]', err.message);
+    console.error(`${tag} Unexpected error: ${err.message}`);
     return 0;
   }
 }
