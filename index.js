@@ -774,6 +774,27 @@ const TOTAL_PRIZES = 27;
 let liveInterval = null;
 let liveFetchInProgress = false;
 
+async function sendLiveCompleteNotification(dateText) {
+  try {
+    const db = await dbPromise;
+    const row = await db.get('SELECT * FROM xsmb WHERE result_date = ?', [dateText]);
+    if (!row) return;
+    const message = `🎯 KQ XSMB ${dateText}\n`
+      + `Đặc biệt: ${row.g0}\n`
+      + `Giải nhất: ${row.g1}\n`
+      + `Giải nhì: ${row.g2}\n`
+      + `Giải ba: ${row.g3}\n`
+      + `Giải tư: ${row.g4}\n`
+      + `Giải năm: ${row.g5}\n`
+      + `Giải sáu: ${row.g6}\n`
+      + `Giải bảy: ${row.g7}`;
+    await sendTelegramMessage(message);
+    console.log('[LIVE] Telegram sent for', dateText);
+  } catch (err) {
+    console.error('[LIVE] Telegram error:', err.message);
+  }
+}
+
 async function startLiveCrawl() {
   if (liveInterval) {
     console.log('[LIVE] Đã đang chạy, bỏ qua.');
@@ -782,7 +803,7 @@ async function startLiveCrawl() {
   console.log('[LIVE] Bắt đầu live crawl XSMB lúc', new Date().toISOString());
 
   liveInterval = setInterval(async () => {
-    if (liveFetchInProgress) return; // bỏ qua tick nếu lần trước chưa xong
+    if (liveFetchInProgress) return;
     liveFetchInProgress = true;
     try {
       const filled = await fetchAndSaveXSMB({ silent: true });
@@ -790,7 +811,8 @@ async function startLiveCrawl() {
         clearInterval(liveInterval);
         liveInterval = null;
         console.log('[LIVE] Đủ 27 giải, dừng live crawl lúc', new Date().toISOString());
-        await fetchAndSaveXSMB();
+        const today = dayjs().utcOffset(7).format('YYYY-MM-DD');
+        await sendLiveCompleteNotification(today);
       }
     } catch (err) {
       console.error('[LIVE ERROR]', err.message);

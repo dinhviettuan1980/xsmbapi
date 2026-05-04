@@ -64,10 +64,19 @@ async function fetchAndSaveXSMB(options = {}) {
     const existing = await db.get('SELECT 1 FROM xsmb WHERE result_date = ?', [dateText]);
 
     if (existing) {
-      await db.run(
-        `UPDATE xsmb SET g0=?, g1=?, g2=?, g3=?, g4=?, g5=?, g6=?, g7=? WHERE result_date = ?`,
-        [result.G0, result.G1, result.G2, result.G3, result.G4, result.G5, result.G6, result.G7, dateText]
-      );
+      // Chỉ update field nào có data, không ghi đè field đang có bằng empty
+      const updates = [];
+      const params = [];
+      for (let i = 0; i <= 7; i++) {
+        if (result[`G${i}`]) {
+          updates.push(`g${i}=?`);
+          params.push(result[`G${i}`]);
+        }
+      }
+      if (updates.length > 0) {
+        params.push(dateText);
+        await db.run(`UPDATE xsmb SET ${updates.join(',')} WHERE result_date = ?`, params);
+      }
     } else {
       await db.run(
         `INSERT INTO xsmb (result_date, g0, g1, g2, g3, g4, g5, g6, g7)
