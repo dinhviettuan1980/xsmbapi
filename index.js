@@ -942,6 +942,140 @@ async function computeAndSaveMaxAbsent() {
   console.log('[MAX_ABSENT] Đã tính và lưu max absent stats cho 00-99');
 }
 
+// ===================== EXTRA STATS =====================
+
+function extractNumbers(row) {
+  const nums = new Set();
+  for (let i = 0; i <= 7; i++) {
+    const col = row[`g${i}`];
+    if (!col) continue;
+    col.split(',').map(s => s.trim()).forEach(n => { if (n.length >= 2) nums.add(n.slice(-2)); });
+  }
+  return nums;
+}
+
+// 1. Thống kê theo thứ trong tuần
+app.get('/api/statistics/by-weekday', async (req, res) => {
+  const db = await dbPromise;
+  const limit = parseInt(req.query.days) || 90;
+  try {
+    const rows = await db.all(
+      `SELECT result_date, g0,g1,g2,g3,g4,g5,g6,g7 FROM xsmb ORDER BY result_date DESC LIMIT ?`, [limit]
+    );
+    // weekday 2-8 (VN: 2=Thứ2...8=CN)
+    const freq = {};
+    for (let d = 2; d <= 8; d++) freq[d] = {};
+
+    rows.forEach(row => {
+      const date = parseXsmbDate(row.result_date);
+      const jsDay = date.getDay(); // 0=Sun
+      const vnDay = jsDay === 0 ? 8 : jsDay + 1;
+      extractNumbers(row).forEach(n => {
+        freq[vnDay][n] = (freq[vnDay][n] || 0) + 1;
+      });
+    });
+    res.json(freq);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// 2. Đầu đuôi nóng lạnh + lô kép
+app.get('/api/statistics/head-tail', async (req, res) => {
+  const db = await dbPromise;
+  const limit = parseInt(req.query.days) || 30;
+  try {
+    const rows = await db.all(
+      `SELECT result_date, g0,g1,g2,g3,g4,g5,g6,g7 FROM xsmb ORDER BY result_date DESC LIMIT ?`, [limit]
+    );
+    const heads = Array(10).fill(0);
+    const tails = Array(10).fill(0);
+    const doubles = {};
+
+    rows.forEach(row => {
+      extractNumbers(row).forEach(n => {
+        heads[parseInt(n[0])]++;
+        tails[parseInt(n[1])]++;
+        if (n[0] === n[1]) doubles[n] = (doubles[n] || 0) + 1;
+      });
+    });
+
+    const doubleList = ['00','11','22','33','44','55','66','77','88','99'].map(n => ({
+      number: n, count: doubles[n] || 0
+    }));
+
+    res.json({ heads, tails, doubles: doubleList });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// 3. Chu kỳ trung bình
+app.get('/api/statistics/avg-cycle', async (req, res) => {
+  const db = await dbPromise;
+  try {
+    const rows = await db.all(
+      `SELECT result_date, g0,g1,g2,g3,g4,g5,g6,g7 FROM xsmb ORDER BY result_date ASC`
+    );
+    const appearances = {};
+    for (let i = 0; i <= 99; i++) appearances[i.toString().padStart(2,'0')] = [];
+
+    rows.forEach(row => {
+      const date = parseXsmbDate(row.result_date);
+      extractNumbers(row).forEach(n => appearances[n].push(date));
+    });
+
+    const result = [];
+    for (let i = 0; i <= 99; i++) {
+      const num = i.toString().padStart(2,'0');
+      const dates = appearances[num];
+      if (dates.length < 2) {
+        result.push({ number: num, avg_cycle: null, appearances: dates.length });
+        continue;
+      }
+      let totalGap = 0;
+      for (let j = 1; j < dates.length; j++)
+        totalGap += Math.floor((dates[j] - dates[j-1]) / 86400000);
+      result.push({
+        number: num,
+        avg_cycle: +(totalGap / (dates.length - 1)).toFixed(1),
+        appearances: dates.length
+      });
+    }
+    res.json(result);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// 4. Số hay về cùng nhau
+app.get('/api/statistics/co-occurrence', async (req, res) => {
+  const db = await dbPromise;
+  const { num, days } = req.query;
+  if (!num) return res.status(400).json({ error: "Missing 'num' param" });
+  const target = num.trim().padStart(2,'0');
+  const limit = parseInt(days) || 90;
+  try {
+    const rows = await db.all(
+      `SELECT result_date, g0,g1,g2,g3,g4,g5,g6,g7 FROM xsmb ORDER BY result_date DESC LIMIT ?`, [limit]
+    );
+    const coCount = {};
+    let targetDays = 0;
+
+    rows.forEach(row => {
+      const nums = extractNumbers(row);
+      if (!nums.has(target)) return;
+      targetDays++;
+      nums.forEach(n => {
+        if (n !== target) coCount[n] = (coCount[n] || 0) + 1;
+      });
+    });
+
+    const result = Object.entries(coCount)
+      .map(([number, count]) => ({ number, count, pct: Math.round(count / targetDays * 100) }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 20);
+
+    res.json({ target, targetDays, results: result });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ============================================================
+
 app.get('/api/statistics/max-absent', async (req, res) => {
   const db = await dbPromise;
   const { nums } = req.query;
