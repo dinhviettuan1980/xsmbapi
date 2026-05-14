@@ -799,6 +799,75 @@ async function startLiveCrawl() {
   }, 1000);
 }
 
+// ===================== SỔ MƠ (DREAM NUMBERS) =====================
+
+async function importDreamNumbers() {
+  const db = await dbPromise;
+  await db.run(`
+    CREATE TABLE IF NOT EXISTS dream_numbers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      keyword TEXT,
+      numbers TEXT
+    )
+  `);
+  const cnt = await db.get('SELECT COUNT(*) as cnt FROM dream_numbers');
+  if (cnt.cnt > 0) return;
+
+  const filePath = path.join(__dirname, 'so_mo.md');
+  if (!fs.existsSync(filePath)) { console.log('[DREAM] Không tìm thấy file so_mo.md'); return; }
+
+  const lines = fs.readFileSync(filePath, 'utf8').split('\n');
+  let imported = 0;
+  for (const line of lines) {
+    const parts = line.trim().split('\t');
+    if (parts.length >= 3) {
+      const keyword = parts[1].trim();
+      const numbers = parts[2].trim();
+      if (keyword && numbers) {
+        await db.run('INSERT INTO dream_numbers (keyword, numbers) VALUES (?, ?)', [keyword, numbers]);
+        imported++;
+      }
+    }
+  }
+  console.log(`[DREAM] Đã import ${imported} từ khóa sổ mơ vào DB`);
+}
+
+const DREAM_STOP_WORDS = new Set([
+  'mơ', 'thấy', 'nằm', 'chiêm', 'bao', 'tôi', 'mình', 'bị', 'và', 'hoặc',
+  'trong', 'giấc', 'có', 'một', 'con', 'cái', 'của', 'để', 'với', 'từ',
+  'đến', 'ra', 'vào', 'là', 'không', 'được', 'đã', 'sẽ', 'đang', 'rồi',
+  'khi', 'lúc', 'về', 'cho', 'những', 'các', 'này', 'đó', 'lại',
+]);
+
+async function searchDreamNumbers(query) {
+  const db = await dbPromise;
+  const words = query.toLowerCase()
+    .split(/\s+/)
+    .map(w => w.trim())
+    .filter(w => w.length >= 2 && !DREAM_STOP_WORDS.has(w));
+
+  if (words.length === 0) return [];
+
+  const conditions = words.map(() => 'LOWER(keyword) LIKE ?').join(' OR ');
+  const params = words.map(w => `%${w}%`);
+
+  return db.all(
+    `SELECT keyword, numbers FROM dream_numbers WHERE ${conditions} ORDER BY LENGTH(keyword) ASC LIMIT 15`,
+    params
+  );
+}
+
+app.get('/api/dream/search', async (req, res) => {
+  const { q } = req.query;
+  if (!q) return res.status(400).json({ error: "Missing 'q' query param" });
+  try {
+    const results = await searchDreamNumbers(q);
+    res.json(results);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ===================== MAX ABSENT STATS =====================
 
 function parseXsmbDate(val) {
@@ -1627,6 +1696,21 @@ app.post("/chat", async (req, res) => {
     }
   }  
 
+  // Tra số theo giấc mơ
+  const dreamKeywords = ['mơ thấy', 'nằm mơ', 'chiêm bao', 'giấc mơ', 'mơ thấy', 'mơ'];
+  if (dreamKeywords.some(k => message.includes(k))) {
+    try {
+      const results = await searchDreamNumbers(message);
+      if (results.length === 0) {
+        return res.json({ reply: 'Không tìm thấy con số nào phù hợp với giấc mơ này trong sổ mơ.' });
+      }
+      const lines = results.map(r => `• ${r.keyword} → ${r.numbers}`).join('\n');
+      return res.json({ reply: `🔮 Sổ mơ tìm thấy ${results.length} kết quả:\n${lines}` });
+    } catch (err) {
+      return res.status(500).json({ error: 'Lỗi khi tra sổ mơ.' });
+    }
+  }
+
   try {
     // Kiểm tra câu hỏi liên quan đến 1 con số cụ thể
     const match = message.match(/\b\d{1,2}\b/); // Tìm số có 1-2 chữ số
@@ -1701,6 +1785,7 @@ app.listen(PORT, async () => {
       console.log('[STARTUP] Chưa có dữ liệu max absent, đang tính lần đầu...');
       computeAndSaveMaxAbsent();
     }
+    await importDreamNumbers();
   } catch (err) {
     console.error('[STARTUP] Lỗi khi kiểm tra max absent:', err.message);
   }
