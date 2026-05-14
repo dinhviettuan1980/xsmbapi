@@ -801,6 +801,13 @@ async function startLiveCrawl() {
 
 // ===================== MAX ABSENT STATS =====================
 
+function parseXsmbDate(val) {
+  const n = Number(val);
+  const d = isNaN(n) ? new Date(val) : new Date(n);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
 async function computeAndSaveMaxAbsent() {
   const db = await dbPromise;
 
@@ -826,8 +833,7 @@ async function computeAndSaveMaxAbsent() {
   }
 
   rows.forEach(row => {
-    const date = new Date(row.result_date);
-    date.setHours(0, 0, 0, 0);
+    const date = parseXsmbDate(row.result_date);
     const appeared = new Set();
     for (let i = 0; i <= 7; i++) {
       const col = row[`g${i}`];
@@ -841,8 +847,7 @@ async function computeAndSaveMaxAbsent() {
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  const firstRecordDate = new Date(rows[0].result_date);
-  firstRecordDate.setHours(0, 0, 0, 0);
+  const firstRecordDate = parseXsmbDate(rows[0].result_date);
 
   for (let i = 0; i <= 99; i++) {
     const num = i.toString().padStart(2, '0');
