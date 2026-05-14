@@ -799,6 +799,115 @@ async function startLiveCrawl() {
   }, 1000);
 }
 
+// ===================== MAX ABSENT STATS =====================
+
+async function computeAndSaveMaxAbsent() {
+  const db = await dbPromise;
+
+  await db.run(`
+    CREATE TABLE IF NOT EXISTS max_absent_stats (
+      number TEXT PRIMARY KEY,
+      max_days_absent INTEGER,
+      updated_at TEXT DEFAULT (datetime('now'))
+    )
+  `);
+
+  const rows = await db.all(`
+    SELECT result_date, g0, g1, g2, g3, g4, g5, g6, g7
+    FROM xsmb
+    ORDER BY result_date ASC
+  `);
+
+  if (rows.length === 0) return;
+
+  const appearances = {};
+  for (let i = 0; i <= 99; i++) {
+    appearances[i.toString().padStart(2, '0')] = [];
+  }
+
+  rows.forEach(row => {
+    const date = new Date(row.result_date);
+    date.setHours(0, 0, 0, 0);
+    const appeared = new Set();
+    for (let i = 0; i <= 7; i++) {
+      const col = row[`g${i}`];
+      if (!col) continue;
+      col.split(',').map(s => s.trim()).forEach(num => {
+        if (num.length >= 2) appeared.add(num.slice(-2));
+      });
+    }
+    appeared.forEach(num => appearances[num].push(date));
+  });
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const firstRecordDate = new Date(rows[0].result_date);
+  firstRecordDate.setHours(0, 0, 0, 0);
+
+  for (let i = 0; i <= 99; i++) {
+    const num = i.toString().padStart(2, '0');
+    const dates = appearances[num];
+    let maxGap = 0;
+
+    if (dates.length === 0) {
+      maxGap = Math.floor((today - firstRecordDate) / (1000 * 60 * 60 * 24));
+    } else {
+      maxGap = Math.max(maxGap, Math.floor((dates[0] - firstRecordDate) / (1000 * 60 * 60 * 24)));
+      for (let j = 1; j < dates.length; j++) {
+        maxGap = Math.max(maxGap, Math.floor((dates[j] - dates[j - 1]) / (1000 * 60 * 60 * 24)));
+      }
+      maxGap = Math.max(maxGap, Math.floor((today - dates[dates.length - 1]) / (1000 * 60 * 60 * 24)));
+    }
+
+    await db.run(
+      `INSERT OR REPLACE INTO max_absent_stats (number, max_days_absent, updated_at) VALUES (?, ?, datetime('now'))`,
+      [num, maxGap]
+    );
+  }
+
+  console.log('[MAX_ABSENT] Đã tính và lưu max absent stats cho 00-99');
+}
+
+app.get('/api/statistics/max-absent', async (req, res) => {
+  const db = await dbPromise;
+  const { nums } = req.query;
+  if (!nums) return res.status(400).json({ error: "Missing 'nums' query param" });
+
+  const numbers = nums.split(',').map(n => n.trim().padStart(2, '0'));
+  try {
+    const placeholders = numbers.map(() => '?').join(',');
+    const rows = await db.all(
+      `SELECT number, max_days_absent FROM max_absent_stats WHERE number IN (${placeholders})`,
+      numbers
+    );
+    const map = {};
+    rows.forEach(r => { map[r.number] = r.max_days_absent; });
+    res.json(numbers.map(n => ({ number: n, max_days_absent: map[n] ?? null })));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/statistics/max-absent-all', async (req, res) => {
+  const db = await dbPromise;
+  try {
+    const rows = await db.all(
+      `SELECT number, max_days_absent, updated_at FROM max_absent_stats ORDER BY number ASC`
+    );
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Tính max absent stats lúc 19h VN (12h UTC)
+cron.schedule('00 12 * * *', async () => {
+  console.log('[CRON] Tính max absent stats lúc 19h VN');
+  await computeAndSaveMaxAbsent();
+});
+
+// ============================================================
+
 // Bắt đầu live crawl lúc 18h15 giờ VN (11h15 UTC)
 cron.schedule('15 11 * * *', startLiveCrawl);
 
@@ -1571,6 +1680,23 @@ cron.schedule('00 3 * * *', async () => {
   check3CauLo();
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`Server is running on http://localhost:${PORT}`);
+  try {
+    const db = await dbPromise;
+    await db.run(`
+      CREATE TABLE IF NOT EXISTS max_absent_stats (
+        number TEXT PRIMARY KEY,
+        max_days_absent INTEGER,
+        updated_at TEXT DEFAULT (datetime('now'))
+      )
+    `);
+    const row = await db.get(`SELECT COUNT(*) as cnt FROM max_absent_stats`);
+    if (!row || row.cnt === 0) {
+      console.log('[STARTUP] Chưa có dữ liệu max absent, đang tính lần đầu...');
+      computeAndSaveMaxAbsent();
+    }
+  } catch (err) {
+    console.error('[STARTUP] Lỗi khi kiểm tra max absent:', err.message);
+  }
 });
