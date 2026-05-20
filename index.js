@@ -154,6 +154,11 @@ app.get('/crawl', async (req, res) => {
   }
 });
 
+app.get('/start-live', (req, res) => {
+  startLiveCrawl();
+  res.send('Live crawl started.');
+});
+
 app.get('/api/history/bulk', async (req, res) => {
   try {
     await fetchBulkXSMB();
@@ -363,6 +368,7 @@ app.get('/api/cau-lo-pascal', async (req, res) => {
   try {
     const rows = await db.all(`
       SELECT g0, g1 FROM xsmb
+      WHERE g0 IS NOT NULL AND g0 != '' AND g1 IS NOT NULL AND g1 != ''
       ORDER BY result_date DESC
       LIMIT 1
     `);
@@ -412,6 +418,7 @@ app.get('/api/tk-cau-lo-pascal', async (req, res) => {
     const rows = await db.all(`
       SELECT result_date, g0, g1, g2, g3, g4, g5, g6, g7
       FROM xsmb
+      WHERE g0 IS NOT NULL AND g0 != '' AND g1 IS NOT NULL AND g1 != ''
       ORDER BY result_date DESC
       LIMIT 91
     `);
@@ -496,7 +503,8 @@ app.get("/api/cau-ong-phong", async (req, res) => {
   try {
     // Lấy giải đặc biệt ngày hôm trước
     const rows = await db.all(`
-      SELECT g0 FROM xsmb 
+      SELECT g0 FROM xsmb
+      WHERE g0 IS NOT NULL AND g0 != ''
       ORDER BY result_date DESC
       LIMIT 1
     `);
@@ -535,7 +543,9 @@ app.get('/api/tk-cau-ong-phong', async (req, res) => {
   try {
     // Lấy 31 ngày gần nhất (để có thể so ngày N và N+1)
     const rows = await db.all(`
-      SELECT result_date, g0, g1, g2, g3, g4, g5, g6, g7 FROM xsmb ORDER BY result_date DESC LIMIT 91
+      SELECT result_date, g0, g1, g2, g3, g4, g5, g6, g7 FROM xsmb
+      WHERE g0 IS NOT NULL AND g0 != ''
+      ORDER BY result_date DESC LIMIT 91
     `);
 
     const getCauOngPhongFromG0 = (g0) => {
@@ -796,7 +806,7 @@ async function startLiveCrawl() {
     } finally {
       liveFetchInProgress = false;
     }
-  }, 1000);
+  }, 500);
 }
 
 // ===================== SỔ MƠ (DREAM NUMBERS) =====================
@@ -953,6 +963,29 @@ function extractNumbers(row) {
   }
   return nums;
 }
+
+// 0. Kết quả gần nhất theo từng thứ (dùng cho highlight top 6)
+app.get('/api/statistics/weekday-recent', async (req, res) => {
+  const db = await dbPromise;
+  try {
+    const rows = await db.all(`
+      SELECT result_date, g0,g1,g2,g3,g4,g5,g6,g7 FROM xsmb
+      WHERE g0 IS NOT NULL AND g0 != ''
+      ORDER BY result_date DESC
+      LIMIT 14
+    `);
+    const result = {};
+    for (const row of rows) {
+      const date = parseXsmbDate(row.result_date);
+      const jsDay = date.getDay();
+      const vnDay = jsDay === 0 ? 8 : jsDay + 1;
+      if (!result[vnDay]) {
+        result[vnDay] = { date: row.result_date, numbers: [...extractNumbers(row)] };
+      }
+    }
+    res.json(result);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
 
 // 1. Thống kê theo thứ trong tuần
 app.get('/api/statistics/by-weekday', async (req, res) => {
@@ -1830,6 +1863,66 @@ app.post("/chat", async (req, res) => {
     }
   }  
 
+  // Thống kê số hay về theo thứ
+  const weekdayPatterns = [
+    { keys: ['thứ 2', 'thứ hai', 't2'], vnDay: 2, label: 'Thứ 2' },
+    { keys: ['thứ 3', 'thứ ba', 't3'], vnDay: 3, label: 'Thứ 3' },
+    { keys: ['thứ 4', 'thứ tư', 't4'], vnDay: 4, label: 'Thứ 4' },
+    { keys: ['thứ 5', 'thứ năm', 't5'], vnDay: 5, label: 'Thứ 5' },
+    { keys: ['thứ 6', 'thứ sáu', 't6'], vnDay: 6, label: 'Thứ 6' },
+    { keys: ['thứ 7', 'thứ bảy', 't7'], vnDay: 7, label: 'Thứ 7' },
+    { keys: ['chủ nhật', 'cn', 'chủ nhật'], vnDay: 8, label: 'Chủ nhật' },
+  ];
+  const isWeekdayQuery = (
+    message.includes('hay về') || message.includes('thường về') || message.includes('số về')
+  ) && (
+    weekdayPatterns.some(p => p.keys.some(k => message.includes(k))) ||
+    message.includes('hôm nay')
+  );
+  if (isWeekdayQuery) {
+    try {
+      let vnDay, dayLabel;
+      if (message.includes('hôm nay')) {
+        const jsDay = new Date().getDay();
+        vnDay = jsDay === 0 ? 8 : jsDay + 1;
+        dayLabel = weekdayPatterns.find(p => p.vnDay === vnDay)?.label || 'Hôm nay';
+      } else {
+        const matched = weekdayPatterns.find(p => p.keys.some(k => message.includes(k)));
+        vnDay = matched.vnDay;
+        dayLabel = matched.label;
+      }
+      const [weekdayRes, absentRes, recentRes] = await Promise.all([
+        axios.get('http://localhost:8001/api/statistics/by-weekday?days=365'),
+        axios.get('http://localhost:8001/api/statistics/longest-absent?days=365'),
+        axios.get('http://localhost:8001/api/statistics/weekday-recent'),
+      ]);
+      const dayData = weekdayRes.data[vnDay] || {};
+      const top6 = Object.entries(dayData)
+        .map(([n, c]) => ({ number: n, count: c }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 6);
+      const absentMap = {};
+      (absentRes.data || []).forEach(r => { absentMap[r.number] = r.days_absent; });
+      const recentSet = new Set((recentRes.data[vnDay]?.numbers) || []);
+      const recentDate = recentRes.data[vnDay]?.date || null;
+      return res.json({
+        reply: `Top 6 số hay về ${dayLabel}:`,
+        weekday_stats: {
+          day_label: dayLabel,
+          recent_date: recentDate,
+          numbers: top6.map(({ number, count }) => ({
+            number,
+            count,
+            days_absent: absentMap[number] ?? 0,
+            is_recent: recentSet.has(number),
+          })),
+        },
+      });
+    } catch (err) {
+      return res.status(500).json({ error: 'Lỗi khi lấy thống kê theo thứ.' });
+    }
+  }
+
   // Tra số theo giấc mơ
   const dreamKeywords = ['mơ thấy', 'nằm mơ', 'chiêm bao', 'giấc mơ', 'mơ thấy', 'mơ'];
   if (dreamKeywords.some(k => message.includes(k))) {
@@ -1842,6 +1935,77 @@ app.post("/chat", async (req, res) => {
       return res.json({ reply: `🔮 Sổ mơ tìm thấy ${results.length} kết quả:\n${lines}` });
     } catch (err) {
       return res.status(500).json({ error: 'Lỗi khi tra sổ mơ.' });
+    }
+  }
+
+  // Tổng hợp thống kê toàn diện cho 1 số (vd: "số 80 ok không", "số 07 thế nào")
+  const numberSummaryTriggers = ['ok không', 'thế nào', 'như thế nào', 'có nên', 'hay không', 'đánh không', 'đánh được không', 'được không', 'nên đánh', 'có về không', 'về không'];
+  const numberSummaryMatch = message.match(/(?:^|số\s*)(\d{1,2})(?:\s|$)/);
+  const isNumberSummaryQuery = numberSummaryMatch && numberSummaryTriggers.some(t => message.includes(t));
+  if (isNumberSummaryQuery) {
+    try {
+      const number = numberSummaryMatch[1].padStart(2, '0');
+      const VN_DAYS = ['', '', 'Thứ 2', 'Thứ 3', 'Thứ 4', 'Thứ 5', 'Thứ 6', 'Thứ 7', 'CN'];
+      const [absentRes, maxAbsentRes, avgCycleRes, coOccRes, weekdayRes, recentRes] = await Promise.all([
+        axios.get(`http://localhost:8001/api/statistics/longest-absent?days=365`),
+        axios.get(`http://localhost:8001/api/statistics/max-absent?nums=${number}`),
+        axios.get(`http://localhost:8001/api/statistics/avg-cycle`),
+        axios.get(`http://localhost:8001/api/statistics/co-occurrence?num=${number}&days=180`),
+        axios.get(`http://localhost:8001/api/statistics/by-weekday?days=365`),
+        axios.get(`http://localhost:8001/api/statistics/weekday-recent`),
+      ]);
+
+      const absentEntry = (absentRes.data || []).find(r => r.number === number);
+      const daysAbsent = absentEntry?.days_absent ?? 0;
+      const lastSeen = absentEntry?.last_seen || null;
+
+      const maxAbsent = maxAbsentRes.data?.[0]?.max_days_absent ?? null;
+
+      const cycleEntry = (avgCycleRes.data || []).find(r => r.number === number);
+      const avgCycle = cycleEntry?.avg_cycle ?? null;
+      const totalAppearances = cycleEntry?.appearances ?? 0;
+
+      const coTop5 = (coOccRes.data?.results || []).slice(0, 5).map(r => r.number);
+
+      // Best weekdays for this number
+      const weekdayData = weekdayRes.data || {};
+      const weekdayCounts = [];
+      for (let d = 2; d <= 8; d++) {
+        const cnt = weekdayData[d]?.[number] || 0;
+        if (cnt > 0) weekdayCounts.push({ day: d, count: cnt });
+      }
+      weekdayCounts.sort((a, b) => b.count - a.count);
+      const bestWeekdays = weekdayCounts.slice(0, 3).map(w => ({ day: VN_DAYS[w.day], count: w.count }));
+
+      // Recent hits (last 14 days from weekday-recent data)
+      const recentNumbers = new Set();
+      for (let d = 2; d <= 8; d++) {
+        (recentRes.data[d]?.numbers || []).forEach(n => recentNumbers.add(n));
+      }
+      const isRecentlyHit = recentNumbers.has(number);
+
+      let reply = `Số ${number}: `;
+      if (daysAbsent === 0) reply += `vừa về hôm nay.`;
+      else reply += `đang gan ${daysAbsent} ngày.`;
+      if (avgCycle) reply += ` Chu kỳ TB ${avgCycle} ngày.`;
+
+      return res.json({
+        reply,
+        number_stats: {
+          number,
+          days_absent: daysAbsent,
+          last_seen: lastSeen,
+          max_absent: maxAbsent,
+          avg_cycle: avgCycle,
+          total_appearances: totalAppearances,
+          best_weekdays: bestWeekdays,
+          co_numbers: coTop5,
+          is_recently_hit: isRecentlyHit,
+        },
+      });
+    } catch (err) {
+      console.error('[CHAT] number summary error:', err.message);
+      return res.status(500).json({ error: 'Lỗi khi tổng hợp thống kê số.' });
     }
   }
 
@@ -1869,7 +2033,7 @@ app.post("/chat", async (req, res) => {
   } catch (error) {
     console.error('Lỗi khi xử lý câu hỏi về số:', error);
     return res.status(500).json({ reply: 'Đã xảy ra lỗi khi kiểm tra số, vui lòng thử lại sau.' });
-  }  
+  }
 
   const date = parseDateFromMessage(message.toLowerCase());
   if (!date) {
