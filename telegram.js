@@ -2,7 +2,7 @@ const TelegramBot = require('node-telegram-bot-api');
 require('dotenv').config();
 
 const bot = new TelegramBot(process.env.TELEGRAM_TOKEN, {
-  polling: true
+  polling: false
 });
 
 async function sendTelegramMessage(message) {
