@@ -1,17 +1,8 @@
 const TelegramBot = require('node-telegram-bot-api');
-const { SocksProxyAgent } = require('socks-proxy-agent');
 require('dotenv').config();
-process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
-
-// Proxy SOCKS5 bạn cần dùng
-const proxy = 'socks5h://198.177.252.24:4145'; // Cập nhật proxy khác nếu cần
-const agent = new SocksProxyAgent(proxy);
 
 const bot = new TelegramBot(process.env.TELEGRAM_TOKEN, {
-  polling: true,
-  request: {
-    agent
-  }
+  polling: true
 });
 
 async function sendTelegramMessage(message) {

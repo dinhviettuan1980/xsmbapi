@@ -1,6 +1,7 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
 const dbPromise = require('./db');
+require('dotenv').config();
 
 function splitByLength(text, count, length) {
   return text.match(new RegExp(`\\d{${length}}`, 'g'))?.slice(0, count).join(',') || '';
@@ -9,8 +10,9 @@ function splitByLength(text, count, length) {
 async function fetchBulkXSMB() {
   try {
     const db = await dbPromise;
+    const baseUrl = process.env.RESULT_BASE_URL || 'https://ketqua07.net';
 
-    const { data } = await axios.get('https://ketqua04.net/so-ket-qua-truyen-thong/300', {
+    const { data } = await axios.get(`${baseUrl}/so-ket-qua-truyen-thong/300`, {
       headers: { 'User-Agent': 'Mozilla/5.0' }
     });
 
