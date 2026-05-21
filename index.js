@@ -20,6 +20,7 @@ const classifyRoute = require('./classify-two-digit');
 const specialsRoute = require('./specials');
 const verifyGoogleToken = require('./middlewares/authMiddleware');
 const getServerInfo = require('./serverInfo');
+const storageRouter = require('./storage-router');
 
 const app = express();
 const PORT = process.env.PORT;
@@ -35,6 +36,7 @@ app.use(combinationRoute);
 app.use(combinationAdvancedRoute);
 app.use(classifyRoute);
 app.use(specialsRoute);
+app.use('/storage', storageRouter);
 
 
 
