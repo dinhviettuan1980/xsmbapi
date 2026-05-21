@@ -101,6 +101,8 @@ if (storageConfig.adapter === 'local') {
   router.use('/files', express.static(storageConfig.local.uploadDir));
 }
 
+router.use('/files/knowledge', express.static(path.join(__dirname, 'knowledge')));
+
 // ─── Routes ───────────────────────────────────────────────────────────────────
 
 const upload = multer({ storage: multer.memoryStorage() });
