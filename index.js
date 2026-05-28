@@ -2124,10 +2124,10 @@ app.post('/api/health-sync', async (req, res) => {
 
   const projectId = process.env.FIREBASE_PROJECT_ID;
   const apiKey    = process.env.FIREBASE_API_KEY;
-  const fsUrl     = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/my_data/${device}?key=${apiKey}`;
+  const fsUrl     = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/my_data/${device}/records?key=${apiKey}`;
 
   try {
-    await axios.patch(fsUrl, {
+    await axios.post(fsUrl, {
       fields: toFirestoreFields({ steps: steps ?? 0, calories: calories ?? 0, hr: hr ?? 0, floors: floors ?? 0, date: date ?? '', ts: ts ?? 0 })
     });
     res.json({ ok: true });
