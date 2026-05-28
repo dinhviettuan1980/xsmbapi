@@ -24,6 +24,8 @@ const storageRouter = require('./storage-router');
 
 const app = express();
 const PORT = process.env.PORT;
+const BASE_URL = process.env.BASE_URL || `http://localhost:${PORT}`;
+const APP_BASE_URL = process.env.APP_BASE_URL || `http://localhost:${PORT}`;
 
 // Thiết lập nơi lưu ảnh tạm thời
 const upload = multer({ dest: 'uploads/' });
@@ -722,7 +724,7 @@ app.get('/api/checkCauLo', async (req, res) => {
 
 async function checkCauLo() {
   try {
-    const res = await axios.get('http://localhost:8001/api/tk-cau-ong-phong');
+    const res = await axios.get(`${BASE_URL}/api/tk-cau-ong-phong`);
     const data = res.data;
 
     if (
@@ -740,7 +742,7 @@ async function checkCauLo() {
     }
 
     // Cầu Pascal
-    const res2 = await axios.get('http://localhost:8001/api/tk-cau-lo-pascal');
+    const res2 = await axios.get(`${BASE_URL}/api/tk-cau-lo-pascal`);
     const data2 = res2.data;
 
     if (
@@ -758,7 +760,7 @@ async function checkCauLo() {
     }
 
     // Cầu lô rơi
-    const res3 = await axios.get('http://localhost:8001/api/tk-cau-lo-roi');
+    const res3 = await axios.get(`${BASE_URL}/api/tk-cau-lo-roi`);
     const data3 = res3.data;
 
     if (
@@ -1171,9 +1173,9 @@ cron.schedule('00 9 * * *', () => {
 async function check3CauLo() {
   try {
     const [res1, res2, res3] = await Promise.all([
-      axios.get('http://localhost:8001/api/tk-cau-ong-phong'),
-      axios.get('http://localhost:8001/api/tk-cau-lo-pascal'),
-      axios.get('http://localhost:8001/api/tk-cau-lo-roi'),
+      axios.get(`${BASE_URL}/api/tk-cau-ong-phong`),
+      axios.get(`${BASE_URL}/api/tk-cau-lo-pascal`),
+      axios.get(`${BASE_URL}/api/tk-cau-lo-roi`),
     ]);
 
     const data1 = res1.data;
@@ -1235,7 +1237,7 @@ app.get('/enable', (req, res) => {
     // Tạo nội dung mới
     const content = {
       isUpdate: true,
-      root: 'http://www.tuandv.asia',
+      root: APP_BASE_URL,
       filename: 'src/manager.jsc',
       enabledLog:true,
       pkgs: [
@@ -1775,7 +1777,7 @@ app.post("/chat", async (req, res) => {
     message.includes("cầu ông phong bao lâu")
   ) {
     try {
-      const response = await axios.get('http://localhost:8001/api/tk-cau-ong-phong');
+      const response = await axios.get(`${BASE_URL}/api/tk-cau-ong-phong`);
       const data = response.data["tk-cau-ong-phong-short"];
       
       if (!data || !Array.isArray(data) || data.length === 0) {
@@ -1796,7 +1798,7 @@ app.post("/chat", async (req, res) => {
 
   if (message.includes('pascal') || message.includes('pascal')) {
     try {
-      const response = await axios.get('http://localhost:8001/api/cau-lo-pascal');
+      const response = await axios.get(`${BASE_URL}/api/cau-lo-pascal`);
       const data = response.data;
 
       const predicted = data?.predictions?.join(', ');
@@ -1816,7 +1818,7 @@ app.post("/chat", async (req, res) => {
   // 1. Cầu ông Phong
   if (message.includes('ông phong') || message.includes('ong phong')) {
     try {
-      const response = await axios.get('http://localhost:8001/api/cau-ong-phong');
+      const response = await axios.get(`${BASE_URL}/api/cau-ong-phong`);
       const data = response.data;
 
       const predicted = data?.predictions?.join(', ');
@@ -1834,7 +1836,7 @@ app.post("/chat", async (req, res) => {
 
     // Câu lô gan
     if (message.includes('lô gan') || message.includes('lô khan') || message.includes('lo gan') || message.includes('lo khan') || message.includes('lô lâu chưa ra')) {
-      const response = await axios.get('http://localhost:8001/api/statistics/longest-absent?days=30');
+      const response = await axios.get(`${BASE_URL}/api/statistics/longest-absent?days=30`);
       const longAbsent = response.data.filter(item => item.days_absent > 5);
       const formatted = longAbsent
         .map(item => `${item.number} (${item.days_absent} ngày)`)
@@ -1847,7 +1849,7 @@ app.post("/chat", async (req, res) => {
 
   if (match) {
     try {
-      const response = await axios.get('http://localhost:8001/api/classify-two-digit');
+      const response = await axios.get(`${BASE_URL}/api/classify-two-digit`);
       const data = response.data;
 
       const missing = data[match.key];
@@ -1894,9 +1896,9 @@ app.post("/chat", async (req, res) => {
         dayLabel = matched.label;
       }
       const [weekdayRes, absentRes, recentRes] = await Promise.all([
-        axios.get('http://localhost:8001/api/statistics/by-weekday?days=365'),
-        axios.get('http://localhost:8001/api/statistics/longest-absent?days=365'),
-        axios.get('http://localhost:8001/api/statistics/weekday-recent'),
+        axios.get(`${BASE_URL}/api/statistics/by-weekday?days=365`),
+        axios.get(`${BASE_URL}/api/statistics/longest-absent?days=365`),
+        axios.get(`${BASE_URL}/api/statistics/weekday-recent`),
       ]);
       const dayData = weekdayRes.data[vnDay] || {};
       const top6 = Object.entries(dayData)
@@ -1949,12 +1951,12 @@ app.post("/chat", async (req, res) => {
       const number = numberSummaryMatch[1].padStart(2, '0');
       const VN_DAYS = ['', '', 'Thứ 2', 'Thứ 3', 'Thứ 4', 'Thứ 5', 'Thứ 6', 'Thứ 7', 'CN'];
       const [absentRes, maxAbsentRes, avgCycleRes, coOccRes, weekdayRes, recentRes] = await Promise.all([
-        axios.get(`http://localhost:8001/api/statistics/longest-absent?days=365`),
-        axios.get(`http://localhost:8001/api/statistics/max-absent?nums=${number}`),
-        axios.get(`http://localhost:8001/api/statistics/avg-cycle`),
-        axios.get(`http://localhost:8001/api/statistics/co-occurrence?num=${number}&days=180`),
-        axios.get(`http://localhost:8001/api/statistics/by-weekday?days=365`),
-        axios.get(`http://localhost:8001/api/statistics/weekday-recent`),
+        axios.get(`${BASE_URL}/api/statistics/longest-absent?days=365`),
+        axios.get(`${BASE_URL}/api/statistics/max-absent?nums=${number}`),
+        axios.get(`${BASE_URL}/api/statistics/avg-cycle`),
+        axios.get(`${BASE_URL}/api/statistics/co-occurrence?num=${number}&days=180`),
+        axios.get(`${BASE_URL}/api/statistics/by-weekday?days=365`),
+        axios.get(`${BASE_URL}/api/statistics/weekday-recent`),
       ]);
 
       const absentEntry = (absentRes.data || []).find(r => r.number === number);
@@ -2016,7 +2018,7 @@ app.post("/chat", async (req, res) => {
     const match = message.match(/\b\d{1,2}\b/); // Tìm số có 1-2 chữ số
     if (match) {
       const number = match[0].padStart(2, '0'); // chuyển 9 -> 09
-      const response = await axios.get(`http://localhost:8001/api/statistics/frequency?days=30&numbers=${number}`);
+      const response = await axios.get(`${BASE_URL}/api/statistics/frequency?days=30&numbers=${number}`);
       const freqData = response.data;
       const daysAbsent = getDaysAbsent(freqData, number);
 

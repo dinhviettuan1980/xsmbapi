@@ -1,6 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const axios = require('axios');
+require('dotenv').config();
+const BASE_URL = process.env.BASE_URL || 'http://localhost:8001';
 
 // Hàm tạo ra kết quả phân loại 00-99
 function generateResults() {
@@ -47,7 +49,7 @@ router.get('/api/classify-two-digit', async (req, res) => {
   try {
     const results = generateResults();
 
-    const specialsRes = await axios.get('http://localhost:8001/api/specials/recent');
+    const specialsRes = await axios.get(`${BASE_URL}/api/specials/recent`);
     const specials = specialsRes.data;
 
     const types = Object.keys(results).filter(key => Array.isArray(results[key]));
