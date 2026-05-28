@@ -33,6 +33,7 @@ const upload = multer({ dest: 'uploads/' });
 app.use(cors());
 
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 app.use(combinationRoute);
 app.use(combinationAdvancedRoute);
@@ -2105,6 +2106,7 @@ function toFirestoreFields(obj) {
 }
 
 app.post('/api/health-sync', async (req, res) => {
+  res.setHeader('Content-Type', 'application/json');
   const { device, steps, calories, hr, floors, date, ts } = req.body;
 
   if (!device) return res.status(400).json({ error: 'Missing device' });
