@@ -2069,6 +2069,74 @@ cron.schedule('00 3 * * *', async () => {
   check3CauLo();
 });
 
+// ===================== HEALTH SYNC RELAY =====================
+
+async function ensureHealthSyncTable() {
+  const db = await dbPromise;
+  await db.run(`
+    CREATE TABLE IF NOT EXISTS health_sync (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      device TEXT NOT NULL,
+      steps INTEGER,
+      calories INTEGER,
+      hr INTEGER,
+      floors INTEGER,
+      date TEXT,
+      ts INTEGER,
+      created_at TEXT DEFAULT (datetime('now'))
+    )
+  `);
+}
+
+function toFirestoreFields(obj) {
+  const fields = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (typeof v === 'number' && Number.isInteger(v)) {
+      fields[k] = { integerValue: String(v) };
+    } else if (typeof v === 'number') {
+      fields[k] = { doubleValue: v };
+    } else {
+      fields[k] = { stringValue: String(v ?? '') };
+    }
+  }
+  return fields;
+}
+
+app.post('/api/health-sync', async (req, res) => {
+  const { device, steps, calories, hr, floors, date, ts } = req.body;
+
+  if (!device) return res.status(400).json({ error: 'Missing device' });
+
+  const db = await dbPromise;
+  try {
+    await db.run(
+      `INSERT INTO health_sync (device, steps, calories, hr, floors, date, ts)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [device, steps ?? 0, calories ?? 0, hr ?? 0, floors ?? 0, date ?? '', ts ?? 0]
+    );
+  } catch (err) {
+    console.error('[HEALTH-SYNC] SQLite error:', err.message);
+  }
+
+  const projectId = process.env.FIREBASE_PROJECT_ID;
+  const apiKey    = process.env.FIREBASE_API_KEY;
+  const fsUrl     = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/my_data/${device}?key=${apiKey}`;
+
+  try {
+    await axios.patch(fsUrl, {
+      fields: toFirestoreFields({ steps: steps ?? 0, calories: calories ?? 0, hr: hr ?? 0, floors: floors ?? 0, date: date ?? '', ts: ts ?? 0 })
+    });
+    res.json({ ok: true });
+  } catch (err) {
+    const status = err.response?.status;
+    const msg    = err.response?.data?.error?.message || err.message;
+    console.error('[HEALTH-SYNC] Firestore error:', status, msg);
+    res.status(502).json({ ok: false, error: msg });
+  }
+});
+
+// ===================== END HEALTH SYNC RELAY =====================
+
 app.listen(PORT, async () => {
   console.log(`Server is running on http://localhost:${PORT}`);
   try {
@@ -2086,6 +2154,7 @@ app.listen(PORT, async () => {
       computeAndSaveMaxAbsent();
     }
     await importDreamNumbers();
+    await ensureHealthSyncTable();
   } catch (err) {
     console.error('[STARTUP] Lỗi khi kiểm tra max absent:', err.message);
   }
