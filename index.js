@@ -2111,24 +2111,31 @@ app.post('/api/health-sync', async (req, res) => {
 
   if (!device) return res.status(400).json({ error: 'Missing device' });
 
+  const tsVal = ts ?? 0;
   const db = await dbPromise;
   try {
-    await db.run(
-      `INSERT INTO health_sync (device, steps, calories, hr, floors, date, ts)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [device, steps ?? 0, calories ?? 0, hr ?? 0, floors ?? 0, date ?? '', ts ?? 0]
+    const existing = await db.get(
+      'SELECT id FROM health_sync WHERE device = ? AND ts = ?', [device, tsVal]
     );
+    if (!existing) {
+      await db.run(
+        `INSERT INTO health_sync (device, steps, calories, hr, floors, date, ts)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [device, steps ?? 0, calories ?? 0, hr ?? 0, floors ?? 0, date ?? '', tsVal]
+      );
+    }
   } catch (err) {
     console.error('[HEALTH-SYNC] SQLite error:', err.message);
   }
 
   const projectId = process.env.FIREBASE_PROJECT_ID;
   const apiKey    = process.env.FIREBASE_API_KEY;
-  const fsUrl     = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/my_data/${device}/records?key=${apiKey}`;
+  // Dùng ts làm document ID → tự nhiên dedup khi retry
+  const fsUrl     = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/my_data/${device}/records/${tsVal}?key=${apiKey}`;
 
   try {
-    await axios.post(fsUrl, {
-      fields: toFirestoreFields({ steps: steps ?? 0, calories: calories ?? 0, hr: hr ?? 0, floors: floors ?? 0, date: date ?? '', ts: ts ?? 0 })
+    await axios.patch(fsUrl, {
+      fields: toFirestoreFields({ steps: steps ?? 0, calories: calories ?? 0, hr: hr ?? 0, floors: floors ?? 0, date: date ?? '', ts: tsVal })
     });
     res.json({ ok: true });
   } catch (err) {
