@@ -2086,9 +2086,15 @@ async function ensureHealthSyncTable() {
       floors INTEGER,
       date TEXT,
       ts INTEGER,
+      spo2 INTEGER DEFAULT 0,
+      stress INTEGER DEFAULT -1,
+      resp_rate INTEGER DEFAULT 0,
       created_at TEXT DEFAULT (datetime('now'))
     )
   `);
+  for (const col of ['spo2 INTEGER DEFAULT 0', 'stress INTEGER DEFAULT -1', 'resp_rate INTEGER DEFAULT 0']) {
+    try { await db.run(`ALTER TABLE health_sync ADD COLUMN ${col}`); } catch (e) {}
+  }
 }
 
 async function ensureHealthAlertsTable() {
@@ -2099,7 +2105,35 @@ async function ensureHealthAlertsTable() {
       device TEXT NOT NULL,
       hr INTEGER,
       ts INTEGER,
+      spo2 INTEGER DEFAULT 0,
+      stress INTEGER DEFAULT -1,
+      resp_rate INTEGER DEFAULT 0,
+      activity INTEGER DEFAULT 0,
       created_at TEXT DEFAULT (datetime('now'))
+    )
+  `);
+  for (const col of ['spo2 INTEGER DEFAULT 0', 'stress INTEGER DEFAULT -1', 'resp_rate INTEGER DEFAULT 0', 'activity INTEGER DEFAULT 0']) {
+    try { await db.run(`ALTER TABLE health_alerts ADD COLUMN ${col}`); } catch (e) {}
+  }
+}
+
+async function ensureHealthDailyTable() {
+  const db = await dbPromise;
+  await db.run(`
+    CREATE TABLE IF NOT EXISTS health_daily (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      device TEXT NOT NULL,
+      date TEXT NOT NULL,
+      avg_hr REAL,
+      min_hr INTEGER,
+      max_hr INTEGER,
+      resting_hr INTEGER,
+      total_steps INTEGER,
+      max_calories INTEGER,
+      avg_stress REAL,
+      avg_spo2 REAL,
+      alert_count INTEGER DEFAULT 0,
+      UNIQUE(device, date)
     )
   `);
 }
@@ -2120,7 +2154,7 @@ function toFirestoreFields(obj) {
 
 app.post('/api/health-sync', async (req, res) => {
   res.setHeader('Content-Type', 'application/json');
-  const { device, steps, calories, hr, floors, date, ts } = req.body;
+  const { device, steps, calories, hr, floors, date, ts, spo2, stress, resp_rate } = req.body;
 
   if (!device) return res.status(400).json({ error: 'Missing device' });
 
@@ -2132,9 +2166,10 @@ app.post('/api/health-sync', async (req, res) => {
     );
     if (!existing) {
       await db.run(
-        `INSERT INTO health_sync (device, steps, calories, hr, floors, date, ts)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [device, steps ?? 0, calories ?? 0, hr ?? 0, floors ?? 0, date ?? '', tsVal]
+        `INSERT INTO health_sync (device, steps, calories, hr, floors, date, ts, spo2, stress, resp_rate)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [device, steps ?? 0, calories ?? 0, hr ?? 0, floors ?? 0, date ?? '', tsVal,
+         spo2 ?? 0, stress ?? -1, resp_rate ?? 0]
       );
     }
   } catch (err) {
@@ -2143,12 +2178,15 @@ app.post('/api/health-sync', async (req, res) => {
 
   const projectId = process.env.FIREBASE_PROJECT_ID;
   const apiKey    = process.env.FIREBASE_API_KEY;
-  // Dùng ts làm document ID → tự nhiên dedup khi retry
   const fsUrl     = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/my_data/${device}/records/${tsVal}?key=${apiKey}`;
 
   try {
     await axios.patch(fsUrl, {
-      fields: toFirestoreFields({ steps: steps ?? 0, calories: calories ?? 0, hr: hr ?? 0, floors: floors ?? 0, date: date ?? '', ts: tsVal })
+      fields: toFirestoreFields({
+        steps: steps ?? 0, calories: calories ?? 0, hr: hr ?? 0,
+        floors: floors ?? 0, date: date ?? '', ts: tsVal,
+        spo2: spo2 ?? 0, stress: stress ?? -1, resp_rate: resp_rate ?? 0
+      })
     });
     res.json({ ok: true });
   } catch (err) {
@@ -2181,8 +2219,12 @@ app.post('/api/health-sync/alerts', async (req, res) => {
   const db = await dbPromise;
 
   for (const record of parsedRecords) {
-    const tsVal = record.ts ?? 0;
-    const hrVal = record.hr ?? 0;
+    const tsVal    = record.ts       ?? 0;
+    const hrVal    = record.hr       ?? 0;
+    const spo2Val  = record.spo2     ?? 0;
+    const stressV  = record.stress   ?? -1;
+    const respRate = record.resp_rate ?? 0;
+    const activity = record.activity ?? 0;
 
     try {
       const existing = await db.get(
@@ -2190,8 +2232,9 @@ app.post('/api/health-sync/alerts', async (req, res) => {
       );
       if (!existing) {
         await db.run(
-          `INSERT INTO health_alerts (device, hr, ts) VALUES (?, ?, ?)`,
-          [device, hrVal, tsVal]
+          `INSERT INTO health_alerts (device, hr, ts, spo2, stress, resp_rate, activity)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [device, hrVal, tsVal, spo2Val, stressV, respRate, activity]
         );
       }
     } catch (err) {
@@ -2201,14 +2244,139 @@ app.post('/api/health-sync/alerts', async (req, res) => {
     try {
       const fsUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/my_data/${device}/alerts/${tsVal}?key=${apiKey}`;
       await axios.patch(fsUrl, {
-        fields: toFirestoreFields({ device, hr: hrVal, ts: tsVal })
+        fields: toFirestoreFields({ hr: hrVal, ts: tsVal, spo2: spo2Val, stress: stressV, resp_rate: respRate, activity })
       });
     } catch (err) {
       console.error('[HEALTH-ALERTS] Firestore error:', err.response?.status, err.message);
     }
   }
 
+  // Gửi Telegram nếu HR bất thường liên tục khi không hoạt động
+  const restingAlerts = parsedRecords.filter(r => (r.activity ?? 0) === 0 && ((r.hr ?? 0) > 120 || (r.hr ?? 0) < 50));
+  if (restingAlerts.length >= 10) {
+    const avgHR = Math.round(restingAlerts.reduce((s, r) => s + r.hr, 0) / restingAlerts.length);
+    sendTelegramMessage(`⚠️ HR bất thường: ${avgHR} bpm (${restingAlerts.length}s liên tiếp) khi nghỉ ngơi - device: ${device}`).catch(() => {});
+  }
+
   res.json({ ok: true, count: parsedRecords.length });
+});
+
+async function computeDailySummary(targetDate) {
+  const db = await dbPromise;
+  const date = targetDate || dayjs().utcOffset(7).subtract(1, 'day').format('YYYY-MM-DD');
+  const devices = await db.all(`SELECT DISTINCT device FROM health_sync WHERE date = ?`, [date]);
+
+  for (const { device } of devices) {
+    const stats = await db.get(`
+      SELECT
+        ROUND(AVG(CASE WHEN hr > 0 THEN hr END), 1)       AS avg_hr,
+        MIN(CASE WHEN hr > 0 THEN hr END)                  AS min_hr,
+        MAX(hr)                                            AS max_hr,
+        MAX(steps)                                         AS total_steps,
+        MAX(calories)                                      AS max_calories,
+        ROUND(AVG(CASE WHEN stress >= 0 THEN stress END), 1) AS avg_stress,
+        ROUND(AVG(CASE WHEN spo2 > 0 THEN spo2 END), 1)   AS avg_spo2
+      FROM health_sync WHERE device = ? AND date = ?
+    `, [device, date]);
+
+    // Resting HR = min HR giờ thấp nhất trong ngày (tương đương lúc ngủ)
+    const restingRow = await db.get(`
+      SELECT MIN(hr) AS resting_hr FROM health_sync
+      WHERE device = ? AND date = ? AND hr > 30
+    `, [device, date]);
+
+    const alertRow = await db.get(`
+      SELECT COUNT(*) AS cnt FROM health_alerts
+      WHERE device = ? AND activity = 0
+        AND datetime(ts, 'unixepoch', 'localtime') LIKE ?
+    `, [device, `${date}%`]);
+
+    if (stats && stats.avg_hr != null) {
+      await db.run(`
+        INSERT OR REPLACE INTO health_daily
+          (device, date, avg_hr, min_hr, max_hr, resting_hr, total_steps, max_calories, avg_stress, avg_spo2, alert_count)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [
+        device, date,
+        stats.avg_hr, stats.min_hr, stats.max_hr,
+        restingRow?.resting_hr ?? null,
+        stats.total_steps, stats.max_calories,
+        stats.avg_stress, stats.avg_spo2,
+        alertRow?.cnt ?? 0
+      ]);
+    }
+  }
+  console.log(`[HEALTH-DAILY] Tổng hợp xong ngày ${date} (${devices.length} device)`);
+}
+
+// Tổng hợp daily lúc 23h30 giờ VN (16h30 UTC)
+cron.schedule('30 16 * * *', () => {
+  console.log('[CRON] Tổng hợp health daily summary');
+  computeDailySummary();
+});
+
+app.get('/api/health-daily', async (req, res) => {
+  const db = await dbPromise;
+  const { device, days } = req.query;
+  if (!device) return res.status(400).json({ error: 'Missing device' });
+  const limit = parseInt(days) || 30;
+  try {
+    const rows = await db.all(
+      `SELECT * FROM health_daily WHERE device = ? ORDER BY date DESC LIMIT ?`,
+      [device, limit]
+    );
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/health-sync/history', async (req, res) => {
+  const db = await dbPromise;
+  const { device, date } = req.query;
+  if (!device) return res.status(400).json({ error: 'Missing device' });
+  try {
+    let rows;
+    if (date) {
+      rows = await db.all(
+        `SELECT * FROM health_sync WHERE device = ? AND date = ? ORDER BY ts ASC`,
+        [device, date]
+      );
+    } else {
+      rows = await db.all(
+        `SELECT * FROM health_sync WHERE device = ? ORDER BY ts DESC LIMIT 288`,
+        [device]
+      );
+    }
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/health-alerts/history', async (req, res) => {
+  const db = await dbPromise;
+  const { device, date } = req.query;
+  if (!device) return res.status(400).json({ error: 'Missing device' });
+  try {
+    let rows;
+    if (date) {
+      rows = await db.all(
+        `SELECT * FROM health_alerts WHERE device = ?
+           AND datetime(ts, 'unixepoch', 'localtime') LIKE ?
+         ORDER BY ts ASC`,
+        [device, `${date}%`]
+      );
+    } else {
+      rows = await db.all(
+        `SELECT * FROM health_alerts WHERE device = ? ORDER BY ts DESC LIMIT 1000`,
+        [device]
+      );
+    }
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ===================== END HEALTH SYNC RELAY =====================
@@ -2232,6 +2400,7 @@ app.listen(PORT, async () => {
     await importDreamNumbers();
     await ensureHealthSyncTable();
     await ensureHealthAlertsTable();
+    await ensureHealthDailyTable();
   } catch (err) {
     console.error('[STARTUP] Lỗi khi kiểm tra max absent:', err.message);
   }
