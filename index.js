@@ -2091,6 +2091,19 @@ async function ensureHealthSyncTable() {
   `);
 }
 
+async function ensureHealthAlertsTable() {
+  const db = await dbPromise;
+  await db.run(`
+    CREATE TABLE IF NOT EXISTS health_alerts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      device TEXT NOT NULL,
+      hr INTEGER,
+      ts INTEGER,
+      created_at TEXT DEFAULT (datetime('now'))
+    )
+  `);
+}
+
 function toFirestoreFields(obj) {
   const fields = {};
   for (const [k, v] of Object.entries(obj)) {
@@ -2146,6 +2159,58 @@ app.post('/api/health-sync', async (req, res) => {
   }
 });
 
+app.post('/api/health-sync/alerts', async (req, res) => {
+  res.setHeader('Content-Type', 'application/json');
+  const { device, records } = req.body;
+
+  if (!device || !records) return res.status(400).json({ error: 'Missing device or records' });
+
+  let parsedRecords;
+  try {
+    parsedRecords = typeof records === 'string' ? JSON.parse(records) : records;
+  } catch (e) {
+    return res.status(400).json({ error: 'Invalid records format' });
+  }
+
+  if (!Array.isArray(parsedRecords) || parsedRecords.length === 0) {
+    return res.status(400).json({ error: 'records must be a non-empty array' });
+  }
+
+  const projectId = process.env.FIREBASE_PROJECT_ID;
+  const apiKey    = process.env.FIREBASE_API_KEY;
+  const db = await dbPromise;
+
+  for (const record of parsedRecords) {
+    const tsVal = record.ts ?? 0;
+    const hrVal = record.hr ?? 0;
+
+    try {
+      const existing = await db.get(
+        'SELECT id FROM health_alerts WHERE device = ? AND ts = ?', [device, tsVal]
+      );
+      if (!existing) {
+        await db.run(
+          `INSERT INTO health_alerts (device, hr, ts) VALUES (?, ?, ?)`,
+          [device, hrVal, tsVal]
+        );
+      }
+    } catch (err) {
+      console.error('[HEALTH-ALERTS] SQLite error:', err.message);
+    }
+
+    try {
+      const fsUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/my_data/${device}/alerts/${tsVal}?key=${apiKey}`;
+      await axios.patch(fsUrl, {
+        fields: toFirestoreFields({ device, hr: hrVal, ts: tsVal })
+      });
+    } catch (err) {
+      console.error('[HEALTH-ALERTS] Firestore error:', err.response?.status, err.message);
+    }
+  }
+
+  res.json({ ok: true, count: parsedRecords.length });
+});
+
 // ===================== END HEALTH SYNC RELAY =====================
 
 app.listen(PORT, async () => {
@@ -2166,6 +2231,7 @@ app.listen(PORT, async () => {
     }
     await importDreamNumbers();
     await ensureHealthSyncTable();
+    await ensureHealthAlertsTable();
   } catch (err) {
     console.error('[STARTUP] Lỗi khi kiểm tra max absent:', err.message);
   }
