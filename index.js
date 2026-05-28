@@ -2074,6 +2074,19 @@ cron.schedule('00 3 * * *', async () => {
 
 // ===================== HEALTH SYNC RELAY =====================
 
+app.get('/api/health-devices', async (req, res) => {
+  res.setHeader('Content-Type', 'application/json');
+  const db = await dbPromise;
+  try {
+    const rows = await db.all(
+      `SELECT DISTINCT device FROM health_sync ORDER BY device ASC`
+    );
+    res.json(rows.map(r => r.device));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 async function ensureHealthSyncTable() {
   const db = await dbPromise;
   await db.run(`
