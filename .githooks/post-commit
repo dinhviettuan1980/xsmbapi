@@ -1,0 +1,5 @@
+#!/bin/sh
+# Auto-send a commit review (Telegram + email) after every commit.
+ROOT="$(git rev-parse --show-toplevel)"
+node "$ROOT/scripts/commit-review.mjs" HEAD >> "$ROOT/.git/commit-review.log" 2>&1 &
+exit 0
