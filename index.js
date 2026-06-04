@@ -48,6 +48,24 @@ app.get('/', (req, res) => {
   res.send('XSMB API is running');
 });
 
+// Gửi thông báo qua Telegram (dùng bot + chat_id đã cấu hình trong telegram.js)
+app.post('/notify', async (req, res) => {
+  if (!process.env.NOTIFY_SECRET || req.get('x-notify-secret') !== process.env.NOTIFY_SECRET) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  const { subject, body, text } = req.body || {};
+  const message = text || [subject, body].filter(Boolean).join('\n\n');
+  if (!message) {
+    return res.status(400).json({ error: "Missing 'text' or 'subject'/'body'" });
+  }
+  try {
+    await sendTelegramMessage(message);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 app.get('/api/history', async (req, res) => {
   const db = await dbPromise;
   const date = req.query.date;
