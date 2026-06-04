@@ -8,13 +8,15 @@ const bot = new TelegramBot(process.env.TELEGRAM_TOKEN, {
 async function sendTelegramMessage(message) {
   if (!process.env.TELEGRAM_CHAT_ID) {
     console.warn("Thiếu TELEGRAM_CHAT_ID trong .env");
-    return;
+    return { ok: false, error: "Missing TELEGRAM_CHAT_ID" };
   }
   try {
     await bot.sendMessage(process.env.TELEGRAM_CHAT_ID, message);
     console.log("[OK] Đã gửi Telegram qua SOCKS5 proxy");
+    return { ok: true };
   } catch (err) {
     console.error("[Telegram ERROR]", err.message);
+    return { ok: false, error: err.message };
   }
 }
 

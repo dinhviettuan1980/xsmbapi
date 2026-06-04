@@ -59,8 +59,9 @@ app.post('/notify', async (req, res) => {
     return res.status(400).json({ error: "Missing 'text' or 'subject'/'body'" });
   }
   try {
-    await sendTelegramMessage(message);
-    res.json({ ok: true });
+    const result = await sendTelegramMessage(message);
+    if (result && result.ok) return res.json({ ok: true });
+    res.status(502).json({ ok: false, error: result?.error || 'Telegram send failed' });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
