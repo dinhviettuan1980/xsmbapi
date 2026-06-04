@@ -48,23 +48,50 @@ app.get('/', (req, res) => {
   res.send('XSMB API is running');
 });
 
-// Gửi thông báo qua Telegram (dùng bot + chat_id đã cấu hình trong telegram.js)
+// Gửi email thông báo qua Resend (server không bị chặn api.resend.com)
+async function sendNotifyEmail(subject, body) {
+  if (!process.env.RESEND_API_KEY) return { ok: false, error: 'Missing RESEND_API_KEY' };
+  const to = process.env.NOTIFY_EMAIL || 'tuandv@gmail.com';
+  try {
+    const r = await axios.post(
+      'https://api.resend.com/emails',
+      {
+        from: 'ConnectDoctor Agent <onboarding@resend.dev>',
+        to: [to],
+        subject,
+        html: `<h2>${subject}</h2><pre style="font-family:inherit;white-space:pre-wrap">${body}</pre>`,
+      },
+      { headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}` } },
+    );
+    return { ok: true, id: r.data && r.data.id };
+  } catch (err) {
+    const detail = err.response && err.response.data ? JSON.stringify(err.response.data) : err.message;
+    return { ok: false, error: detail };
+  }
+}
+
+// Gửi thông báo: email (chính) + Telegram (best-effort, server bị chặn nếu không có proxy)
 app.post('/notify', async (req, res) => {
   if (!process.env.NOTIFY_SECRET || req.get('x-notify-secret') !== process.env.NOTIFY_SECRET) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
   const { subject, body, text } = req.body || {};
-  const message = text || [subject, body].filter(Boolean).join('\n\n');
-  if (!message) {
+  const subj = (subject || 'ConnectDoctor Agent').toString();
+  const bodyText = (body || text || '').toString();
+  if (!subj && !bodyText) {
     return res.status(400).json({ error: "Missing 'text' or 'subject'/'body'" });
   }
-  try {
-    const result = await sendTelegramMessage(message);
-    if (result && result.ok) return res.json({ ok: true });
-    res.status(502).json({ ok: false, error: result?.error || 'Telegram send failed' });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+  const tgMessage = text || `${subj}\n\n${bodyText}`;
+
+  const [tg, email] = await Promise.all([
+    sendTelegramMessage(tgMessage),
+    sendNotifyEmail(subj, bodyText),
+  ]);
+
+  if (email.ok || (tg && tg.ok)) {
+    return res.json({ ok: true, email: email.ok, telegram: !!(tg && tg.ok) });
   }
+  res.status(502).json({ ok: false, email, telegram: tg });
 });
 
 app.get('/api/history', async (req, res) => {
