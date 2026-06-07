@@ -7,7 +7,7 @@ const cron = require('node-cron');
 const fetchAndSaveXSMB = require('./crawler');
 const fetchBulkXSMB = require('./crawler_bulk');
 const sendTelegramMessage = require('./telegram');
-const { startZaloBot, zaloStatus } = require('./bot');
+const { startZaloBot, zaloStatus, triggerRelogin, getLastQR } = require('./bot');
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
@@ -2468,8 +2468,28 @@ app.listen(PORT, async () => {
   startZaloBot().catch((e) => console.error('[zalo-bot] khởi động lỗi:', e.message));
 });
 
-// Endpoint chẩn đoán bot Zalo (bảo vệ bằng NOTIFY_SECRET): /zalo/health?secret=...
+// --- Quản lý bot Zalo qua HTTP (server bị chặn Telegram nên dùng trình duyệt) ---
+// Bảo vệ bằng NOTIFY_SECRET: thêm ?secret=... vào URL.
+function zaloAuth(req, res) {
+  if (req.query.secret !== process.env.NOTIFY_SECRET) { res.status(403).json({ error: 'forbidden' }); return false; }
+  return true;
+}
+// Trạng thái: /zalo/health?secret=...
 app.get('/zalo/health', (req, res) => {
-  if (req.query.secret !== process.env.NOTIFY_SECRET) return res.status(403).json({ error: 'forbidden' });
+  if (!zaloAuth(req, res)) return;
   res.json(zaloStatus());
+});
+// Bắt đầu đăng nhập QR: /zalo/login?secret=...  → rồi mở /zalo/qr để quét
+app.get('/zalo/login', async (req, res) => {
+  if (!zaloAuth(req, res)) return;
+  const r = await triggerRelogin();
+  res.json({ ...r, next: `Mở /zalo/qr?secret=... sau 2-3 giây để xem mã QR` });
+});
+// Ảnh QR đăng nhập: /zalo/qr?secret=...  (mở bằng trình duyệt, quét bằng app Zalo)
+app.get('/zalo/qr', (req, res) => {
+  if (!zaloAuth(req, res)) return;
+  const qr = getLastQR();
+  if (!qr) return res.status(202).send('QR chưa sẵn sàng — gọi /zalo/login trước rồi tải lại sau vài giây.');
+  res.set('Content-Type', 'image/png');
+  res.send(Buffer.from(qr, 'base64'));
 });

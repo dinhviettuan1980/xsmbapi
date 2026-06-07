@@ -24,6 +24,8 @@ let started = false;
 let loggedIn = false;
 let lastError = null;
 let lastPollOk = null;
+let lastQR = null;          // ảnh QR base64 gần nhất (phục vụ đăng nhập qua HTTP)
+let reloginRunning = false; // tránh chạy 2 phiên relogin chồng nhau
 
 // Trạng thái để chẩn đoán từ xa qua endpoint /zalo/health
 function zaloStatus() {
@@ -115,7 +117,8 @@ async function relogin() {
   api = await zalo.loginQR({}, async (ev) => {
     switch (ev.type) {
       case T.QRCodeGenerated:
-        await sendQRImage(ev.data.image);
+        lastQR = ev.data.image;          // lưu để lấy qua endpoint /zalo/qr (server bị chặn Telegram)
+        await sendQRImage(ev.data.image); // gửi Telegram (best-effort; fail nếu server chặn)
         await tg("📷 Quét mã QR ở trên bằng app Zalo để đăng nhập.");
         break;
       case T.QRCodeExpired:
@@ -141,6 +144,18 @@ async function relogin() {
   await tg("✅ Đăng nhập lại thành công, bot hoạt động tiếp.");
 }
 
+// Kích hoạt đăng nhập lại (chạy nền). QR sẽ có ở getLastQR()/Telegram.
+async function triggerRelogin() {
+  if (reloginRunning) return { running: true };
+  reloginRunning = true;
+  lastQR = null;
+  relogin()
+    .catch((e) => { lastError = "relogin: " + (e?.message || e); })
+    .finally(() => { reloginRunning = false; });
+  return { started: true };
+}
+function getLastQR() { return lastQR; }
+
 // Lắng nghe lệnh /relogin từ Telegram (long-polling, không cần thư viện ngoài)
 let offset = 0;
 async function poll() {
@@ -151,11 +166,14 @@ async function poll() {
     for (const u of d.result || []) {
       offset = u.update_id + 1;
       if (u.message?.text?.trim() === "/relogin") {
-        try { await relogin(); } catch (e) { lastError = "relogin: " + e.message; await tg("Lỗi relogin: " + e.message); }
+        try { await triggerRelogin(); } catch (e) { lastError = "relogin: " + e.message; await tg("Lỗi relogin: " + e.message); }
       }
     }
-  } catch (e) { lastError = "poll: " + (e?.message || e); }
-  poll();
+    poll();                       // thành công → tiếp tục long-poll ngay
+  } catch (e) {
+    lastError = "poll: " + (e?.message || e);
+    setTimeout(poll, 15000);      // lỗi (vd server chặn Telegram) → chờ 15s rồi thử lại, tránh quay vòng tốc độ cao
+  }
 }
 
 // ---- Chống gửi trùng: mỗi ngày chỉ gửi đúng 1 lần ----
@@ -214,7 +232,7 @@ async function startZaloBot() {
   catch (e) { lastError = "loginFromFile: " + (e?.message || e); await tg("⚠️ Bot Zalo khởi động chưa có session. Gửi /relogin để quét QR."); }
 }
 
-module.exports = { startZaloBot, zaloStatus };
+module.exports = { startZaloBot, zaloStatus, triggerRelogin, getLastQR };
 
 // Cho phép chạy độc lập để test: `node bot.js`
 if (require.main === module) startZaloBot();
