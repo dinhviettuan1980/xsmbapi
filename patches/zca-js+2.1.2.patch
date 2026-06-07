@@ -1,0 +1,13 @@
+diff --git a/node_modules/zca-js/dist/cjs/utils.cjs b/node_modules/zca-js/dist/cjs/utils.cjs
+index b49a0ba..574263c 100644
+--- a/node_modules/zca-js/dist/cjs/utils.cjs
++++ b/node_modules/zca-js/dist/cjs/utils.cjs
+@@ -256,7 +256,7 @@ async function request(ctx, url, options, raw = false) {
+     const defaultHeaders = await getDefaultHeaders(ctx, origin);
+     if (!raw) {
+         if (options) {
+-            options.headers = Object.assign(defaultHeaders, options.headers || {});
++            options.headers = Object.assign(defaultHeaders, (options.headers instanceof Headers ? Object.fromEntries(options.headers) : (options.headers || {})));
+         }
+         else
+             options = { headers: defaultHeaders };

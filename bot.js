@@ -18,9 +18,25 @@ const SENT_FILE = path.join(__dirname, "last_sent.txt");
 
 // zca-js được nạp lười (lazy) trong startZaloBot() để việc thiếu thư viện / chưa
 // cấu hình không làm sập tiến trình API khi require('./bot').
-let Zalo, ThreadType;
+let Zalo, ThreadType, LoginQRCallbackEventType;
 let api = null;
 let started = false;
+
+// Bug zca-js + undici (Node 20.15): khi xử lý redirect, một property khóa-Symbol
+// rò rỉ từ Headers vào object headers → undici ném "Could not convert argument of
+// type symbol to string". Polyfill này dựng lại headers chỉ từ khóa chuỗi rồi gọi
+// fetch chuẩn (vẫn là undici nên getSetCookie() hoạt động, cookie login không mất).
+function safeFetch(url, init) {
+  if (init && init.headers && typeof init.headers === "object" && !(init.headers instanceof Headers)) {
+    const clean = {};
+    for (const k of Object.keys(init.headers)) clean[k] = init.headers[k];
+    init = { ...init, headers: clean };
+  }
+  return fetch(url, init);
+}
+function newZalo() {
+  return new Zalo({ polyfill: safeFetch });
+}
 
 async function tg(text) {
   await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
@@ -29,10 +45,11 @@ async function tg(text) {
   }).catch(() => {});
 }
 
-async function sendQR(qrPath) {
+// zca-js 2.x trả ảnh QR dạng base64 (không phải đường dẫn file) → gửi thẳng lên Telegram.
+async function sendQRImage(base64) {
   const form = new FormData();
   form.append("chat_id", TG_CHAT);
-  form.append("photo", new Blob([fs.readFileSync(qrPath)]), "qr.png");
+  form.append("photo", new Blob([Buffer.from(base64, "base64")]), "qr.png");
   await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendPhoto`, { method: "POST", body: form });
 }
 
@@ -63,7 +80,7 @@ function attachListener() {
 
 async function loginFromFile() {
   const cred = JSON.parse(fs.readFileSync(CRED_FILE));
-  const zalo = new Zalo();
+  const zalo = newZalo();
   api = await zalo.login(cred);
   attachListener();
   api.listener.start();
@@ -72,10 +89,32 @@ async function loginFromFile() {
 async function relogin() {
   await tg("Đang tạo QR mới…");
   try { api?.listener.stop(); } catch {}
-  const zalo = new Zalo();
-  api = await zalo.loginQR({}, (qrPath) => sendQR(qrPath));
-  const c = api.getContext();
-  fs.writeFileSync(CRED_FILE, JSON.stringify({ cookie: c.cookie, imei: c.imei, userAgent: c.userAgent }));
+  const zalo = newZalo();
+  const T = LoginQRCallbackEventType;
+  let cred = null;
+  api = await zalo.loginQR({}, async (ev) => {
+    switch (ev.type) {
+      case T.QRCodeGenerated:
+        await sendQRImage(ev.data.image);
+        await tg("📷 Quét mã QR ở trên bằng app Zalo để đăng nhập.");
+        break;
+      case T.QRCodeExpired:
+        await tg("⌛ Mã QR đã hết hạn. Gửi /relogin để lấy mã mới.");
+        break;
+      case T.QRCodeScanned:
+        await tg(`👀 Đã quét QR${ev.data?.display_name ? " (" + ev.data.display_name + ")" : ""}, đang hoàn tất…`);
+        break;
+      case T.QRCodeDeclined:
+        await tg("❌ Đăng nhập bị từ chối trên điện thoại.");
+        break;
+      case T.GotLoginInfo:
+        // Thông tin session để đăng nhập lại lần sau (không phải api.getContext() như zca-js cũ)
+        cred = { imei: ev.data.imei, cookie: ev.data.cookie, userAgent: ev.data.userAgent };
+        break;
+    }
+  });
+  if (cred) fs.writeFileSync(CRED_FILE, JSON.stringify(cred));
+  else await tg("⚠️ Không lấy được thông tin session để lưu cred.json.");
   attachListener();
   api.listener.start();
   await tg("✅ Đăng nhập lại thành công, bot hoạt động tiếp.");
@@ -122,7 +161,7 @@ async function startZaloBot() {
     return;
   }
   try {
-    ({ Zalo, ThreadType } = require("zca-js"));
+    ({ Zalo, ThreadType, LoginQRCallbackEventType } = require("zca-js"));
   } catch (e) {
     console.warn("[zalo-bot] Chưa cài 'zca-js' (chạy: npm install zca-js) → bỏ qua bot Zalo.");
     return;
