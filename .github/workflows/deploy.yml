@@ -18,8 +18,10 @@ jobs:
           username: ubuntu
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           script: |
+            set -e
             cd /home/ubuntu/xsmbapi
-            git pull origin main
+            git fetch origin main
+            git reset --hard origin/main
             npm install --production
             pm2 restart xsmbapi
-            echo "Deployed at $(date)"
+            echo "Deployed $(git rev-parse --short HEAD) at $(date)"
