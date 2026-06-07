@@ -26,6 +26,8 @@ let lastError = null;
 let lastPollOk = null;
 let lastQR = null;          // ảnh QR base64 gần nhất (phục vụ đăng nhập qua HTTP)
 let reloginRunning = false; // tránh chạy 2 phiên relogin chồng nhau
+let lastLoginEvent = null;  // sự kiện QR gần nhất (chẩn đoán riêng, không bị poll ghi đè)
+let lastLoginError = null;  // lỗi trong quá trình đăng nhập (tách khỏi lỗi poll Telegram)
 
 // Trạng thái để chẩn đoán từ xa qua endpoint /zalo/health
 function zaloStatus() {
@@ -40,6 +42,9 @@ function zaloStatus() {
     hasFetch: typeof fetch === "function",
     lastPollOk,
     lastError,
+    reloginRunning,
+    lastLoginEvent,
+    lastLoginError,
   };
 }
 
@@ -115,29 +120,38 @@ async function relogin() {
   const T = LoginQRCallbackEventType;
   let cred = null;
   api = await zalo.loginQR({}, async (ev) => {
-    switch (ev.type) {
-      case T.QRCodeGenerated:
-        lastQR = ev.data.image;          // lưu để lấy qua endpoint /zalo/qr (server bị chặn Telegram)
-        await sendQRImage(ev.data.image); // gửi Telegram (best-effort; fail nếu server chặn)
-        await tg("📷 Quét mã QR ở trên bằng app Zalo để đăng nhập.");
-        break;
-      case T.QRCodeExpired:
-        await tg("⌛ Mã QR đã hết hạn. Gửi /relogin để lấy mã mới.");
-        break;
-      case T.QRCodeScanned:
-        await tg(`👀 Đã quét QR${ev.data?.display_name ? " (" + ev.data.display_name + ")" : ""}, đang hoàn tất…`);
-        break;
-      case T.QRCodeDeclined:
-        await tg("❌ Đăng nhập bị từ chối trên điện thoại.");
-        break;
-      case T.GotLoginInfo:
-        // Thông tin session để đăng nhập lại lần sau (không phải api.getContext() như zca-js cũ)
-        cred = { imei: ev.data.imei, cookie: ev.data.cookie, userAgent: ev.data.userAgent };
-        break;
-    }
+    // QUAN TRỌNG: mọi thao tác Telegram phải bọc try/catch — server bị chặn Telegram,
+    // nếu để ném lỗi ra khỏi callback sẽ phá vỡ luồng đăng nhập Zalo.
+    try {
+      switch (ev.type) {
+        case T.QRCodeGenerated:
+          lastQR = ev.data.image;          // lưu để lấy qua endpoint /zalo/qr
+          lastLoginEvent = "QRCodeGenerated @ " + new Date().toISOString();
+          await sendQRImage(ev.data.image); // best-effort
+          await tg("📷 Quét mã QR ở trên bằng app Zalo để đăng nhập.");
+          break;
+        case T.QRCodeExpired:
+          lastLoginEvent = "QRCodeExpired @ " + new Date().toISOString();
+          await tg("⌛ Mã QR đã hết hạn. Lấy mã mới.");
+          break;
+        case T.QRCodeScanned:
+          lastLoginEvent = "QRCodeScanned @ " + new Date().toISOString();
+          await tg(`👀 Đã quét QR${ev.data?.display_name ? " (" + ev.data.display_name + ")" : ""}, đang hoàn tất…`);
+          break;
+        case T.QRCodeDeclined:
+          lastLoginEvent = "QRCodeDeclined @ " + new Date().toISOString();
+          await tg("❌ Đăng nhập bị từ chối trên điện thoại.");
+          break;
+        case T.GotLoginInfo:
+          // Thông tin session để đăng nhập lại lần sau (không phải api.getContext() như zca-js cũ)
+          cred = { imei: ev.data.imei, cookie: ev.data.cookie, userAgent: ev.data.userAgent };
+          lastLoginEvent = "GotLoginInfo @ " + new Date().toISOString();
+          break;
+      }
+    } catch (e) { lastLoginError = "callback(" + ev.type + "): " + (e?.message || e); }
   });
-  if (cred) fs.writeFileSync(CRED_FILE, JSON.stringify(cred));
-  else await tg("⚠️ Không lấy được thông tin session để lưu cred.json.");
+  if (cred) { fs.writeFileSync(CRED_FILE, JSON.stringify(cred)); }
+  else { lastLoginError = "GotLoginInfo không tới — không có cred để lưu"; await tg("⚠️ Không lấy được session."); }
   attachListener();
   api.listener.start();
   loggedIn = true;
@@ -149,8 +163,9 @@ async function triggerRelogin() {
   if (reloginRunning) return { running: true };
   reloginRunning = true;
   lastQR = null;
+  lastLoginError = null;
   relogin()
-    .catch((e) => { lastError = "relogin: " + (e?.message || e); })
+    .catch((e) => { lastLoginError = "relogin: " + (e?.message || e); })
     .finally(() => { reloginRunning = false; });
   return { started: true };
 }
