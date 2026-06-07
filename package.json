@@ -6,7 +6,7 @@
     "start": "node index.js",
     "bot": "node bot.js",
     "friends": "node list-friends.js",
-    "postinstall": "patch-package"
+    "postinstall": "patch-package --error-on-fail"
   },
   "dependencies": {
     "axios": "^0.27.2",
@@ -22,13 +22,13 @@
     "mysql2": "^3.5.2",
     "node-cron": "^3.0.2",
     "node-telegram-bot-api": "^0.66.0",
+    "patch-package": "^8.0.1",
     "puppeteer": "^24.26.0",
     "sharp": "^0.34.3",
     "socks-proxy-agent": "^8.0.5",
     "sqlite": "^5.1.1",
     "sqlite3": "^5.1.7",
     "tesseract.js": "^4.1.4",
-    "zca-js": "^2.1.2",
-    "patch-package": "^8.0.1"
+    "zca-js": "2.1.2"
   }
 }
