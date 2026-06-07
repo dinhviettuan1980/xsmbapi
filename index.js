@@ -7,6 +7,7 @@ const cron = require('node-cron');
 const fetchAndSaveXSMB = require('./crawler');
 const fetchBulkXSMB = require('./crawler_bulk');
 const sendTelegramMessage = require('./telegram');
+const { startZaloBot } = require('./bot');
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
@@ -2463,4 +2464,6 @@ app.listen(PORT, async () => {
   } catch (err) {
     console.error('[STARTUP] Lỗi khi kiểm tra max absent:', err.message);
   }
+  // Khởi động bot Zalo (tự bỏ qua nếu chưa cài zca-js hoặc ZALO_ENABLED=false)
+  startZaloBot().catch((e) => console.error('[zalo-bot] khởi động lỗi:', e.message));
 });

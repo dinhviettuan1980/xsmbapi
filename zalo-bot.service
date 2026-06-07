@@ -1,0 +1,16 @@
+[Unit]
+# Bot Zalo nay nhung trong API (index.js) -> chi can MOT service chay ca API + bot.
+Description=xsmbapi (Express API + Zalo daily bot)
+After=network.target
+
+[Service]
+# Sua cho dung server: chay `pwd` va `which node` roi dien lai.
+WorkingDirectory=/home/ban/xsmbapi
+ExecStart=/usr/bin/node index.js
+EnvironmentFile=/home/ban/xsmbapi/.env
+Restart=always
+RestartSec=10
+User=ban
+
+[Install]
+WantedBy=multi-user.target

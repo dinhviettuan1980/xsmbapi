@@ -4,3 +4,5 @@ xsmb.db
 uploads/
 knowledge/
 *.pem
+cred.json
+last_sent.txt
