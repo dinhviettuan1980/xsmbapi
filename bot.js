@@ -21,6 +21,25 @@ const SENT_FILE = path.join(__dirname, "last_sent.txt");
 let Zalo, ThreadType, LoginQRCallbackEventType;
 let api = null;
 let started = false;
+let loggedIn = false;
+let lastError = null;
+let lastPollOk = null;
+
+// Trạng thái để chẩn đoán từ xa qua endpoint /zalo/health
+function zaloStatus() {
+  return {
+    enabled: ENABLED,
+    started,
+    loggedIn,
+    hasCred: (() => { try { return fs.existsSync(CRED_FILE); } catch { return false; } })(),
+    targetId: TARGET_ID ? "set" : "missing",
+    cron: CRON_EXPR,
+    node: process.version,
+    hasFetch: typeof fetch === "function",
+    lastPollOk,
+    lastError,
+  };
+}
 
 // Bug zca-js + undici (Node 20.15): khi xử lý redirect, một property khóa-Symbol
 // rò rỉ từ Headers vào object headers → undici ném "Could not convert argument of
@@ -84,6 +103,7 @@ async function loginFromFile() {
   api = await zalo.login(cred);
   attachListener();
   api.listener.start();
+  loggedIn = true;
 }
 
 async function relogin() {
@@ -117,6 +137,7 @@ async function relogin() {
   else await tg("⚠️ Không lấy được thông tin session để lưu cred.json.");
   attachListener();
   api.listener.start();
+  loggedIn = true;
   await tg("✅ Đăng nhập lại thành công, bot hoạt động tiếp.");
 }
 
@@ -126,13 +147,14 @@ async function poll() {
   try {
     const r = await fetch(`https://api.telegram.org/bot${TG_TOKEN}/getUpdates?timeout=30&offset=${offset}`);
     const d = await r.json();
+    lastPollOk = new Date().toISOString();
     for (const u of d.result || []) {
       offset = u.update_id + 1;
       if (u.message?.text?.trim() === "/relogin") {
-        try { await relogin(); } catch (e) { await tg("Lỗi relogin: " + e.message); }
+        try { await relogin(); } catch (e) { lastError = "relogin: " + e.message; await tg("Lỗi relogin: " + e.message); }
       }
     }
-  } catch {}
+  } catch (e) { lastError = "poll: " + (e?.message || e); }
   poll();
 }
 
@@ -163,6 +185,7 @@ async function startZaloBot() {
   try {
     ({ Zalo, ThreadType, LoginQRCallbackEventType } = require("zca-js"));
   } catch (e) {
+    lastError = "require zca-js: " + (e?.message || e);
     console.warn("[zalo-bot] Chưa cài 'zca-js' (chạy: npm install zca-js) → bỏ qua bot Zalo.");
     return;
   }
@@ -188,10 +211,10 @@ async function startZaloBot() {
 
   poll();
   try { await loginFromFile(); console.log("[zalo-bot] đã đăng nhập từ cred.json"); }
-  catch { await tg("⚠️ Bot Zalo khởi động chưa có session. Gửi /relogin để quét QR."); }
+  catch (e) { lastError = "loginFromFile: " + (e?.message || e); await tg("⚠️ Bot Zalo khởi động chưa có session. Gửi /relogin để quét QR."); }
 }
 
-module.exports = { startZaloBot };
+module.exports = { startZaloBot, zaloStatus };
 
 // Cho phép chạy độc lập để test: `node bot.js`
 if (require.main === module) startZaloBot();

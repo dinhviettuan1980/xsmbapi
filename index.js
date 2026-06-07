@@ -7,7 +7,7 @@ const cron = require('node-cron');
 const fetchAndSaveXSMB = require('./crawler');
 const fetchBulkXSMB = require('./crawler_bulk');
 const sendTelegramMessage = require('./telegram');
-const { startZaloBot } = require('./bot');
+const { startZaloBot, zaloStatus } = require('./bot');
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
@@ -2466,4 +2466,10 @@ app.listen(PORT, async () => {
   }
   // Khởi động bot Zalo (tự bỏ qua nếu chưa cài zca-js hoặc ZALO_ENABLED=false)
   startZaloBot().catch((e) => console.error('[zalo-bot] khởi động lỗi:', e.message));
+});
+
+// Endpoint chẩn đoán bot Zalo (bảo vệ bằng NOTIFY_SECRET): /zalo/health?secret=...
+app.get('/zalo/health', (req, res) => {
+  if (req.query.secret !== process.env.NOTIFY_SECRET) return res.status(403).json({ error: 'forbidden' });
+  res.json(zaloStatus());
 });
