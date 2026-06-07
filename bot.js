@@ -171,6 +171,18 @@ async function triggerRelogin() {
 }
 function getLastQR() { return lastQR; }
 
+// Gửi ngay ZALO_MESSAGE tới ZALO_TARGET_ID (để test end-to-end, không đợi cron)
+async function sendTestMessage() {
+  if (!api) return { ok: false, error: "chưa đăng nhập Zalo" };
+  if (!TARGET_ID) return { ok: false, error: "thiếu ZALO_TARGET_ID" };
+  try {
+    await api.sendMessage({ msg: MESSAGE }, TARGET_ID, ThreadType.User);
+    return { ok: true, to: TARGET_ID, msg: MESSAGE };
+  } catch (e) {
+    return { ok: false, error: e?.message || String(e) };
+  }
+}
+
 // Lắng nghe lệnh /relogin từ Telegram (long-polling, không cần thư viện ngoài)
 let offset = 0;
 async function poll() {
@@ -247,7 +259,7 @@ async function startZaloBot() {
   catch (e) { lastError = "loginFromFile: " + (e?.message || e); await tg("⚠️ Bot Zalo khởi động chưa có session. Gửi /relogin để quét QR."); }
 }
 
-module.exports = { startZaloBot, zaloStatus, triggerRelogin, getLastQR };
+module.exports = { startZaloBot, zaloStatus, triggerRelogin, getLastQR, sendTestMessage };
 
 // Cho phép chạy độc lập để test: `node bot.js`
 if (require.main === module) startZaloBot();

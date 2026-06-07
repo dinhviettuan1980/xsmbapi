@@ -7,7 +7,7 @@ const cron = require('node-cron');
 const fetchAndSaveXSMB = require('./crawler');
 const fetchBulkXSMB = require('./crawler_bulk');
 const sendTelegramMessage = require('./telegram');
-const { startZaloBot, zaloStatus, triggerRelogin, getLastQR } = require('./bot');
+const { startZaloBot, zaloStatus, triggerRelogin, getLastQR, sendTestMessage } = require('./bot');
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
@@ -2492,4 +2492,9 @@ app.get('/zalo/qr', (req, res) => {
   if (!qr) return res.status(202).send('QR chưa sẵn sàng — gọi /zalo/login trước rồi tải lại sau vài giây.');
   res.set('Content-Type', 'image/png');
   res.send(Buffer.from(qr, 'base64'));
+});
+// Gửi thử tin ngay tới target: /zalo/test?secret=...
+app.get('/zalo/test', async (req, res) => {
+  if (!zaloAuth(req, res)) return;
+  res.json(await sendTestMessage());
 });
