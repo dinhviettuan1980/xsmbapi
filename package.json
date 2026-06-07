@@ -28,9 +28,7 @@
     "sqlite": "^5.1.1",
     "sqlite3": "^5.1.7",
     "tesseract.js": "^4.1.4",
-    "zca-js": "^2.1.2"
-  },
-  "devDependencies": {
+    "zca-js": "^2.1.2",
     "patch-package": "^8.0.1"
   }
 }
