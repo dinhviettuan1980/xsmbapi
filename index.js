@@ -7,7 +7,7 @@ const cron = require('node-cron');
 const fetchAndSaveXSMB = require('./crawler');
 const fetchBulkXSMB = require('./crawler_bulk');
 const sendTelegramMessage = require('./telegram');
-const { startZaloBot, zaloStatus, triggerRelogin, getLastQR, sendTestMessage, verifySession, listFriends, listContacts, sendMessageTo, getSchedules, addSchedule, updateSchedule, deleteSchedule } = require('./bot');
+const { startZaloBot, zaloStatus, triggerRelogin, getLastQR, sendTestMessage, verifySession, listFriends, listContacts, sendMessageTo, getSchedules, addSchedule, updateSchedule, deleteSchedule, getMessageHistory, testSchedule } = require('./bot');
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
@@ -2533,4 +2533,14 @@ app.put('/zalo/schedules/:id', async (req, res) => {
 app.delete('/zalo/schedules/:id', async (req, res) => {
   if (!zaloAuth(req, res)) return;
   res.json(await deleteSchedule(req.params.id));
+});
+// Gửi thử lịch đơn lẻ (lịch đặc biệt sẽ tự tạo nội dung)
+app.post('/zalo/schedules/:id/test', async (req, res) => {
+  if (!zaloAuth(req, res)) return;
+  res.json(await testSchedule(req.params.id));
+});
+// Lịch sử gửi tin theo targetId
+app.get('/zalo/history/:targetId', async (req, res) => {
+  if (!zaloAuth(req, res)) return;
+  res.json(await getMessageHistory(req.params.targetId));
 });

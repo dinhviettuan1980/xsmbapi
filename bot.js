@@ -13,6 +13,9 @@ const TG_TOKEN  = process.env.TELEGRAM_TOKEN || "";
 const TG_CHAT   = process.env.TELEGRAM_CHAT_ID || "";
 const CRON_EXPR = process.env.ZALO_CRON || "30 17 * * *"; // mặc định 17h30
 const ENABLED   = process.env.ZALO_ENABLED !== "false";   // đặt ZALO_ENABLED=false để tắt
+// Lịch đặc biệt: tự tạo nội dung từ top-3 số theo thứ, gửi 17h, nhắc Telegram nếu không trả lời
+const SPECIAL_TARGET_ID   = process.env.ZALO_SPECIAL_TARGET_ID   || "";
+const SPECIAL_TARGET_NAME = process.env.ZALO_SPECIAL_TARGET_NAME || "";
 
 const CRED_FILE = path.join(__dirname, "cred.json");
 const SENT_FILE = path.join(__dirname, "last_sent.txt");
@@ -111,9 +114,19 @@ function scheduleNudges() {
 function attachListener() {
   api.listener.on("message", (m) => {
     if (m.isSelf) return;
-    if (m.type === ThreadType.User && m.threadId === TARGET_ID) {
+    if (m.type === ThreadType.User &&
+        (m.threadId === TARGET_ID || (SPECIAL_TARGET_ID && m.threadId === SPECIAL_TARGET_ID))) {
       clearNudges(); // đối tượng đã trả lời → ngừng nhắc
     }
+  });
+}
+function scheduleSpecialNudges(targetLabel) {
+  clearNudges();
+  [50, 60].forEach((min) => {
+    const t = setTimeout(() => {
+      tg(`⏰ Đã ${min} phút kể từ khi gửi mà ${targetLabel || "đối tượng"} chưa trả lời.`);
+    }, min * 60 * 1000);
+    nudgeTimers.push(t);
   });
 }
 
@@ -314,34 +327,63 @@ async function initSchedulesDB() {
       targetId TEXT NOT NULL,
       targetName TEXT DEFAULT '',
       targetType TEXT DEFAULT 'user',
-      message TEXT NOT NULL,
+      message TEXT NOT NULL DEFAULT '',
       time TEXT NOT NULL DEFAULT '08:00',
       days TEXT DEFAULT '[]',
       enabled INTEGER DEFAULT 1,
+      isSpecial INTEGER DEFAULT 0,
       lastSentDate TEXT,
       createdAt TEXT
     )
   `);
-  // Migration: thêm cột targetType nếu bảng đã tồn tại từ trước
+  // Migrations
   try { await db.run("ALTER TABLE zalo_schedules ADD COLUMN targetType TEXT DEFAULT 'user'"); } catch {}
-  // Seed lịch từ env vars nếu bảng rỗng
-  const row = await db.get("SELECT COUNT(*) as cnt FROM zalo_schedules");
+  try { await db.run("ALTER TABLE zalo_schedules ADD COLUMN isSpecial INTEGER DEFAULT 0"); } catch {}
+
+  // Lịch sử gửi tin nhắn
+  await db.run(`
+    CREATE TABLE IF NOT EXISTS zalo_message_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      targetId TEXT NOT NULL,
+      targetType TEXT DEFAULT 'user',
+      scheduleId TEXT,
+      message TEXT NOT NULL,
+      sentAt TEXT NOT NULL
+    )
+  `);
+
+  // Seed lịch thường từ env vars nếu bảng rỗng
+  const row = await db.get("SELECT COUNT(*) as cnt FROM zalo_schedules WHERE isSpecial=0");
   if (row.cnt === 0 && TARGET_ID && MESSAGE) {
     const parts = CRON_EXPR.trim().split(/\s+/);
     const time = parts.length >= 2
       ? `${parts[1].padStart(2, "0")}:${parts[0].padStart(2, "0")}`
       : "06:00";
     await db.run(
-      `INSERT INTO zalo_schedules (id,targetId,targetName,message,time,days,enabled,lastSentDate,createdAt)
-       VALUES (?,?,?,?,?,?,?,?,?)`,
-      [Date.now().toString(36) + "init", TARGET_ID, "", MESSAGE, time, "[]", 1, null, new Date().toISOString()]
+      `INSERT INTO zalo_schedules (id,targetId,targetName,targetType,message,time,days,enabled,isSpecial,lastSentDate,createdAt)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+      [Date.now().toString(36) + "init", TARGET_ID, "", "user", MESSAGE, time, "[]", 1, 0, null, new Date().toISOString()]
     );
     console.log("[zalo-bot] Seeded initial schedule from env vars →", time);
+  }
+
+  // Seed lịch đặc biệt nếu chưa có
+  if (SPECIAL_TARGET_ID) {
+    const existing = await db.get("SELECT 1 FROM zalo_schedules WHERE isSpecial=1");
+    if (!existing) {
+      await db.run(
+        `INSERT INTO zalo_schedules (id,targetId,targetName,targetType,message,time,days,enabled,isSpecial,lastSentDate,createdAt)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+        [Date.now().toString(36) + "sp", SPECIAL_TARGET_ID, SPECIAL_TARGET_NAME || "", "user",
+         "[auto: weekday_top3]", "17:00", "[]", 1, 1, null, new Date().toISOString()]
+      );
+      console.log("[zalo-bot] Seeded special schedule →", SPECIAL_TARGET_NAME || SPECIAL_TARGET_ID, "@ 17:00");
+    }
   }
 }
 
 function rowToSchedule(r) {
-  return { ...r, days: JSON.parse(r.days || "[]"), enabled: r.enabled === 1, targetType: r.targetType || "user" };
+  return { ...r, days: JSON.parse(r.days || "[]"), enabled: r.enabled === 1, targetType: r.targetType || "user", isSpecial: r.isSpecial === 1 };
 }
 
 async function getSchedules() {
@@ -365,12 +407,14 @@ async function addSchedule(s) {
 }
 async function updateSchedule(id, patch) {
   const db = await dbPromise;
-  if (!(await db.get("SELECT 1 FROM zalo_schedules WHERE id=?", [id]))) return null;
+  const existing = await db.get("SELECT * FROM zalo_schedules WHERE id=?", [id]);
+  if (!existing) return null;
   const sets = []; const params = [];
+  // Lịch đặc biệt: chỉ cho sửa days và enabled
   for (const k of ["targetId", "targetName", "message", "time"]) {
-    if (k in patch) { sets.push(`${k}=?`); params.push(patch[k]); }
+    if (k in patch && !existing.isSpecial) { sets.push(`${k}=?`); params.push(patch[k]); }
   }
-  if ("targetType" in patch) { sets.push("targetType=?"); params.push(patch.targetType === "group" ? "group" : "user"); }
+  if ("targetType" in patch && !existing.isSpecial) { sets.push("targetType=?"); params.push(patch.targetType === "group" ? "group" : "user"); }
   if ("enabled" in patch) { sets.push("enabled=?"); params.push(patch.enabled !== false ? 1 : 0); }
   if ("days" in patch) { sets.push("days=?"); params.push(JSON.stringify(Array.isArray(patch.days) ? patch.days.map(Number) : [])); }
   if (sets.length) { params.push(id); await db.run(`UPDATE zalo_schedules SET ${sets.join(",")} WHERE id=?`, params); }
@@ -380,6 +424,72 @@ async function deleteSchedule(id) {
   const db = await dbPromise;
   const r = await db.run("DELETE FROM zalo_schedules WHERE id=?", [id]);
   return { deleted: r.changes };
+}
+
+// Lấy top-3 số theo thứ hôm nay (dùng để tạo nội dung lịch đặc biệt)
+async function getWeekdayTop3() {
+  try {
+    const db = await dbPromise;
+    const jsDay = new Date().getDay();
+    const vnDay = jsDay === 0 ? 8 : jsDay + 1;
+    const rows = await db.all(
+      `SELECT result_date, g0,g1,g2,g3,g4,g5,g6,g7 FROM xsmb ORDER BY result_date DESC LIMIT 365`
+    );
+    const counts = {};
+    for (const row of rows) {
+      const d = new Date(isNaN(Number(row.result_date)) ? row.result_date : Number(row.result_date));
+      const vnd = d.getDay() === 0 ? 8 : d.getDay() + 1;
+      if (vnd !== vnDay) continue;
+      for (let i = 0; i <= 7; i++) {
+        const col = row[`g${i}`];
+        if (!col) continue;
+        col.split(",").map((s) => s.trim()).forEach((num) => {
+          if (num.length >= 2) { const n = num.slice(-2); counts[n] = (counts[n] || 0) + 1; }
+        });
+      }
+    }
+    return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([n]) => n);
+  } catch (e) {
+    console.error("[zalo-bot] getWeekdayTop3:", e.message);
+    return [];
+  }
+}
+
+// Ghi lịch sử gửi tin
+async function logMessage(targetId, targetType, message, scheduleId) {
+  try {
+    const db = await dbPromise;
+    await db.run(
+      `INSERT INTO zalo_message_history (targetId,targetType,message,scheduleId,sentAt) VALUES (?,?,?,?,?)`,
+      [targetId, targetType || "user", message, scheduleId || null, new Date().toISOString()]
+    );
+  } catch (e) { console.error("[zalo-bot] logMessage:", e.message); }
+}
+
+async function getMessageHistory(targetId) {
+  const db = await dbPromise;
+  return db.all(
+    `SELECT * FROM zalo_message_history WHERE targetId=? ORDER BY sentAt DESC LIMIT 50`,
+    [targetId]
+  );
+}
+
+// Gửi thử lịch đơn lẻ (dùng cả cho lịch đặc biệt — tạo nội dung tự động)
+async function testSchedule(id) {
+  const db = await dbPromise;
+  const row = await db.get("SELECT * FROM zalo_schedules WHERE id=?", [id]);
+  if (!row) return { ok: false, error: "không tìm thấy lịch" };
+  const s = rowToSchedule(row);
+  if (!s.targetId) return { ok: false, error: "thiếu targetId" };
+  let message = s.message;
+  if (s.isSpecial) {
+    const top3 = await getWeekdayTop3();
+    if (!top3.length) return { ok: false, error: "không lấy được top 3 số hôm nay" };
+    message = `Lô ${top3.join(",")} x 5n`;
+  }
+  if (!message) return { ok: false, error: "thiếu nội dung" };
+  const r = await sendMessageTo(s.targetId, message, s.targetType || "user");
+  return { ...r, message };
 }
 
 // Giờ:phút và thứ hiện tại theo giờ Việt Nam
@@ -399,14 +509,29 @@ async function runScheduleTick() {
   const today = todayVN();
   const db = await dbPromise;
   for (const s of list) {
-    if (!s.enabled || !s.targetId || !s.message) continue;
+    if (!s.enabled || !s.targetId) continue;
     if ((s.time || "").padStart(5, "0") !== hm) continue;
     if (s.days && s.days.length && !s.days.includes(day)) continue;
     if (s.lastSentDate === today) continue;
-    const r = await sendMessageTo(s.targetId, s.message, s.targetType || "user");
+
+    // Xác định nội dung gửi (lịch đặc biệt tự tạo nội dung từ top-3 theo thứ)
+    let message = s.message;
+    if (s.isSpecial) {
+      const top3 = await getWeekdayTop3();
+      if (!top3.length) {
+        await tg(`⚠️ Lịch đặc biệt tới ${s.targetName || s.targetId}: không lấy được top 3 số.`);
+        continue;
+      }
+      message = `Lô ${top3.join(",")} x 5n`;
+    }
+    if (!message) continue;
+
+    const r = await sendMessageTo(s.targetId, message, s.targetType || "user");
     if (r.ok) {
       await db.run("UPDATE zalo_schedules SET lastSentDate=? WHERE id=?", [today, s.id]);
+      await logMessage(s.targetId, s.targetType, message, s.id);
       await tg(`📨 Đã gửi lịch hẹn tới ${s.targetName || s.targetId} lúc ${hm}.`);
+      if (s.isSpecial) scheduleSpecialNudges(s.targetName || s.targetId);
     } else {
       await tg(`⚠️ Lịch hẹn tới ${s.targetName || s.targetId} thất bại: ${r.error}`);
     }
@@ -487,6 +612,7 @@ module.exports = {
   startZaloBot, zaloStatus, triggerRelogin, getLastQR, sendTestMessage,
   verifySession, listFriends, listContacts, sendMessageTo,
   getSchedules, addSchedule, updateSchedule, deleteSchedule,
+  getMessageHistory, testSchedule,
 };
 
 // Cho phép chạy độc lập để test: `node bot.js`
