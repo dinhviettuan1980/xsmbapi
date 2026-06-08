@@ -7,7 +7,7 @@ const cron = require('node-cron');
 const fetchAndSaveXSMB = require('./crawler');
 const fetchBulkXSMB = require('./crawler_bulk');
 const sendTelegramMessage = require('./telegram');
-const { startZaloBot, zaloStatus, triggerRelogin, getLastQR, sendTestMessage, verifySession, listFriends, listContacts, sendMessageTo, getSchedules, addSchedule, updateSchedule, deleteSchedule, getMessageHistory, testSchedule } = require('./bot');
+const { startZaloBot, zaloStatus, triggerRelogin, getLastQR, sendTestMessage, verifySession, listFriends, listContacts, sendMessageTo, getSchedules, addSchedule, updateSchedule, deleteSchedule, getMessageHistory, testSchedule, logMessage } = require('./bot');
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
@@ -2513,7 +2513,9 @@ app.get('/zalo/friends', async (req, res) => {
 app.post('/zalo/send', async (req, res) => {
   if (!zaloAuth(req, res)) return;
   const { targetId, message, targetType } = req.body || {};
-  res.json(await sendMessageTo(targetId, message, targetType || 'user'));
+  const r = await sendMessageTo(targetId, message, targetType || 'user');
+  if (r.ok) await logMessage(targetId, targetType || 'user', message, null);
+  res.json(r);
 });
 // --- Lịch hẹn gửi tin (CRUD) ---
 app.get('/zalo/schedules', async (req, res) => {

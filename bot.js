@@ -613,7 +613,7 @@ module.exports = {
   startZaloBot, zaloStatus, triggerRelogin, getLastQR, sendTestMessage,
   verifySession, listFriends, listContacts, sendMessageTo,
   getSchedules, addSchedule, updateSchedule, deleteSchedule,
-  getMessageHistory, testSchedule,
+  getMessageHistory, testSchedule, logMessage,
 };
 
 // Cho phép chạy độc lập để test: `node bot.js`
