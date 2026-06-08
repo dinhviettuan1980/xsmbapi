@@ -290,7 +290,7 @@ async function listGroups({ force = false } = {}) {
     if (!groupIds.length) return { updatedAt: new Date().toISOString(), groups: [] };
     const info = await api.getGroupInfo(groupIds);
     const groups = Object.values(info?.gridInfoMap || {}).map((g) => ({
-      groupId: String(g.gridId || g.id || ""),
+      groupId: String(g.groupId || g.gridId || g.id || ""),
       name: g.name || "",
       avatar: g.avt || g.avatar || "",
     })).filter((g) => g.groupId);
@@ -489,6 +489,7 @@ async function testSchedule(id) {
   }
   if (!message) return { ok: false, error: "thiếu nội dung" };
   const r = await sendMessageTo(s.targetId, message, s.targetType || "user");
+  if (r.ok) await logMessage(s.targetId, s.targetType, message, s.id);
   return { ...r, message };
 }
 
