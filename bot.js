@@ -515,6 +515,14 @@ async function runScheduleTick() {
     if (s.days && s.days.length && !s.days.includes(day)) continue;
     if (s.lastSentDate === today) continue;
 
+    // Atomic claim: đánh dấu đã gửi TRƯỚC KHI gửi — dù process restart ngay sau
+    // cũng không gửi lại. UPDATE WHERE đảm bảo chỉ 1 lần thắng ngay cả khi chồng lấp.
+    const claim = await db.run(
+      "UPDATE zalo_schedules SET lastSentDate=? WHERE id=? AND (lastSentDate IS NULL OR lastSentDate!=?)",
+      [today, s.id, today]
+    );
+    if (claim.changes === 0) continue; // đã claim rồi, bỏ qua
+
     // Xác định nội dung gửi (lịch đặc biệt tự tạo nội dung từ top-3 theo thứ)
     let message = s.message;
     if (s.isSpecial) {
@@ -529,7 +537,6 @@ async function runScheduleTick() {
 
     const r = await sendMessageTo(s.targetId, message, s.targetType || "user");
     if (r.ok) {
-      await db.run("UPDATE zalo_schedules SET lastSentDate=? WHERE id=?", [today, s.id]);
       await logMessage(s.targetId, s.targetType, message, s.id);
       await tg(`📨 Đã gửi lịch hẹn tới ${s.targetName || s.targetId} lúc ${hm}.`);
       if (s.isSpecial) scheduleSpecialNudges(s.targetName || s.targetId);
