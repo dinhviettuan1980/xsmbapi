@@ -17,6 +17,7 @@ const ENABLED   = process.env.ZALO_ENABLED !== "false";   // đặt ZALO_ENABLED
 const CRED_FILE = path.join(__dirname, "cred.json");
 const SENT_FILE = path.join(__dirname, "last_sent.txt");
 const FRIENDS_FILE = path.join(__dirname, "friends.json");     // cache danh bạ để FE chọn người nhận
+const GROUPS_FILE  = path.join(__dirname, "groups.json");      // cache nhóm Zalo để FE chọn người nhận
 const SCHEDULES_FILE = path.join(__dirname, "schedules.json"); // lịch gửi tin do FE cấu hình
 
 // zca-js được nạp lười (lazy) trong startZaloBot() để việc thiếu thư viện / chưa
@@ -221,13 +222,14 @@ async function sendTestMessage() {
   }
 }
 
-// Gửi tin tới một người bất kỳ (dùng cho lịch hẹn và nút "gửi thử" trên FE)
-async function sendMessageTo(targetId, message) {
+// Gửi tin tới một người / nhóm bất kỳ (dùng cho lịch hẹn và nút "gửi thử" trên FE)
+async function sendMessageTo(targetId, message, targetType = "user") {
   if (!api) return { ok: false, error: "chưa đăng nhập Zalo" };
   if (!targetId) return { ok: false, error: "thiếu targetId" };
   if (!message) return { ok: false, error: "thiếu nội dung" };
   try {
-    await api.sendMessage({ msg: String(message) }, String(targetId), ThreadType.User);
+    const thread = targetType === "group" ? ThreadType.Group : ThreadType.User;
+    await api.sendMessage({ msg: String(message) }, String(targetId), thread);
     return { ok: true, to: targetId };
   } catch (e) {
     return { ok: false, error: e?.message || String(e) };
@@ -259,6 +261,50 @@ async function listFriends({ force = false } = {}) {
   }
 }
 
+// ---- Nhóm Zalo (cache ra file để FE chọn nhóm) ----
+function readGroupsCache() {
+  try { return JSON.parse(fs.readFileSync(GROUPS_FILE, "utf8")); }
+  catch { return { updatedAt: null, groups: [] }; }
+}
+
+async function listGroups({ force = false } = {}) {
+  const cache = readGroupsCache();
+  if (!force && cache.groups.length) return cache;
+  if (!api) return { ...cache, error: "chưa đăng nhập Zalo" };
+  try {
+    const allGroups = await api.getAllGroups();
+    const groupIds = Object.keys(allGroups?.gridVerMap || {});
+    if (!groupIds.length) return { updatedAt: new Date().toISOString(), groups: [] };
+    const info = await api.getGroupInfo(groupIds);
+    const groups = Object.values(info?.gridInfoMap || {}).map((g) => ({
+      groupId: String(g.gridId || g.id || ""),
+      name: g.name || "",
+      avatar: g.avt || g.avatar || "",
+    })).filter((g) => g.groupId);
+    const out = { updatedAt: new Date().toISOString(), groups };
+    fs.writeFileSync(GROUPS_FILE, JSON.stringify(out));
+    return out;
+  } catch (e) {
+    return { ...cache, error: e?.message || String(e) };
+  }
+}
+
+// Danh sách liên hệ gộp: bạn bè + nhóm, mỗi item có trường type ('user'|'group')
+async function listContacts({ force = false } = {}) {
+  const [friendsData, groupsData] = await Promise.all([listFriends({ force }), listGroups({ force })]);
+  const contacts = [
+    ...(friendsData.friends || []).map((f) => ({ ...f, type: "user" })),
+    ...(groupsData.groups || []).map((g) => ({ userId: g.groupId, name: g.name, avatar: g.avatar, type: "group" })),
+  ];
+  return {
+    updatedAt: new Date().toISOString(),
+    contacts,
+    friendsCount: (friendsData.friends || []).length,
+    groupsCount: (groupsData.groups || []).length,
+    error: friendsData.error || groupsData.error,
+  };
+}
+
 // ---- Lịch gửi tin do FE cấu hình — lưu trong SQLite ----
 async function initSchedulesDB() {
   const db = await dbPromise;
@@ -267,6 +313,7 @@ async function initSchedulesDB() {
       id TEXT PRIMARY KEY,
       targetId TEXT NOT NULL,
       targetName TEXT DEFAULT '',
+      targetType TEXT DEFAULT 'user',
       message TEXT NOT NULL,
       time TEXT NOT NULL DEFAULT '08:00',
       days TEXT DEFAULT '[]',
@@ -275,6 +322,8 @@ async function initSchedulesDB() {
       createdAt TEXT
     )
   `);
+  // Migration: thêm cột targetType nếu bảng đã tồn tại từ trước
+  try { await db.run("ALTER TABLE zalo_schedules ADD COLUMN targetType TEXT DEFAULT 'user'"); } catch {}
   // Seed lịch từ env vars nếu bảng rỗng
   const row = await db.get("SELECT COUNT(*) as cnt FROM zalo_schedules");
   if (row.cnt === 0 && TARGET_ID && MESSAGE) {
@@ -292,7 +341,7 @@ async function initSchedulesDB() {
 }
 
 function rowToSchedule(r) {
-  return { ...r, days: JSON.parse(r.days || "[]"), enabled: r.enabled === 1 };
+  return { ...r, days: JSON.parse(r.days || "[]"), enabled: r.enabled === 1, targetType: r.targetType || "user" };
 }
 
 async function getSchedules() {
@@ -305,11 +354,12 @@ async function addSchedule(s) {
   const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
   const days = JSON.stringify(Array.isArray(s.days) ? s.days.map(Number).filter((d) => d >= 0 && d <= 6) : []);
   const time = /^\d{1,2}:\d{2}$/.test(s.time || "") ? s.time : "08:00";
+  const targetType = s.targetType === "group" ? "group" : "user";
   const createdAt = new Date().toISOString();
   await db.run(
-    `INSERT INTO zalo_schedules (id,targetId,targetName,message,time,days,enabled,lastSentDate,createdAt)
-     VALUES (?,?,?,?,?,?,?,?,?)`,
-    [id, String(s.targetId || ""), s.targetName || "", s.message || "", time, days, s.enabled !== false ? 1 : 0, null, createdAt]
+    `INSERT INTO zalo_schedules (id,targetId,targetName,targetType,message,time,days,enabled,lastSentDate,createdAt)
+     VALUES (?,?,?,?,?,?,?,?,?,?)`,
+    [id, String(s.targetId || ""), s.targetName || "", targetType, s.message || "", time, days, s.enabled !== false ? 1 : 0, null, createdAt]
   );
   return rowToSchedule(await db.get("SELECT * FROM zalo_schedules WHERE id=?", [id]));
 }
@@ -320,6 +370,7 @@ async function updateSchedule(id, patch) {
   for (const k of ["targetId", "targetName", "message", "time"]) {
     if (k in patch) { sets.push(`${k}=?`); params.push(patch[k]); }
   }
+  if ("targetType" in patch) { sets.push("targetType=?"); params.push(patch.targetType === "group" ? "group" : "user"); }
   if ("enabled" in patch) { sets.push("enabled=?"); params.push(patch.enabled !== false ? 1 : 0); }
   if ("days" in patch) { sets.push("days=?"); params.push(JSON.stringify(Array.isArray(patch.days) ? patch.days.map(Number) : [])); }
   if (sets.length) { params.push(id); await db.run(`UPDATE zalo_schedules SET ${sets.join(",")} WHERE id=?`, params); }
@@ -352,7 +403,7 @@ async function runScheduleTick() {
     if ((s.time || "").padStart(5, "0") !== hm) continue;
     if (s.days && s.days.length && !s.days.includes(day)) continue;
     if (s.lastSentDate === today) continue;
-    const r = await sendMessageTo(s.targetId, s.message);
+    const r = await sendMessageTo(s.targetId, s.message, s.targetType || "user");
     if (r.ok) {
       await db.run("UPDATE zalo_schedules SET lastSentDate=? WHERE id=?", [today, s.id]);
       await tg(`📨 Đã gửi lịch hẹn tới ${s.targetName || s.targetId} lúc ${hm}.`);
@@ -434,7 +485,7 @@ async function startZaloBot() {
 
 module.exports = {
   startZaloBot, zaloStatus, triggerRelogin, getLastQR, sendTestMessage,
-  verifySession, listFriends, sendMessageTo,
+  verifySession, listFriends, listContacts, sendMessageTo,
   getSchedules, addSchedule, updateSchedule, deleteSchedule,
 };
 

@@ -7,7 +7,7 @@ const cron = require('node-cron');
 const fetchAndSaveXSMB = require('./crawler');
 const fetchBulkXSMB = require('./crawler_bulk');
 const sendTelegramMessage = require('./telegram');
-const { startZaloBot, zaloStatus, triggerRelogin, getLastQR, sendTestMessage, verifySession, listFriends, sendMessageTo, getSchedules, addSchedule, updateSchedule, deleteSchedule } = require('./bot');
+const { startZaloBot, zaloStatus, triggerRelogin, getLastQR, sendTestMessage, verifySession, listFriends, listContacts, sendMessageTo, getSchedules, addSchedule, updateSchedule, deleteSchedule } = require('./bot');
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
@@ -2504,16 +2504,16 @@ app.get('/zalo/verify', async (req, res) => {
   const ok = await verifySession();
   res.json({ sessionValid: ok, ...zaloStatus() });
 });
-// Danh bạ Zalo để chọn người nhận: /zalo/friends?secret=...&refresh=1
+// Danh bạ + nhóm Zalo để chọn người nhận: /zalo/friends?secret=...&refresh=1
 app.get('/zalo/friends', async (req, res) => {
   if (!zaloAuth(req, res)) return;
-  res.json(await listFriends({ force: req.query.refresh === '1' }));
+  res.json(await listContacts({ force: req.query.refresh === '1' }));
 });
-// Gửi tin ngay tới người tuỳ chọn: POST /zalo/send?secret=...  body {targetId, message}
+// Gửi tin ngay tới người / nhóm tuỳ chọn: POST /zalo/send?secret=...  body {targetId, message, targetType}
 app.post('/zalo/send', async (req, res) => {
   if (!zaloAuth(req, res)) return;
-  const { targetId, message } = req.body || {};
-  res.json(await sendMessageTo(targetId, message));
+  const { targetId, message, targetType } = req.body || {};
+  res.json(await sendMessageTo(targetId, message, targetType || 'user'));
 });
 // --- Lịch hẹn gửi tin (CRUD) ---
 app.get('/zalo/schedules', async (req, res) => {
