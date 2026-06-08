@@ -20,6 +20,7 @@ const combinationAdvancedRoute = require('./combination-advanced');
 const classifyRoute = require('./classify-two-digit');
 const specialsRoute = require('./specials');
 const verifyGoogleToken = require('./middlewares/authMiddleware');
+const { verifyGoogleIdToken } = verifyGoogleToken;
 const getServerInfo = require('./serverInfo');
 const storageRouter = require('./storage-router');
 
@@ -2469,25 +2470,41 @@ app.listen(PORT, async () => {
 });
 
 // --- Quản lý bot Zalo qua HTTP (server bị chặn Telegram nên dùng trình duyệt) ---
-// Bảo vệ bằng NOTIFY_SECRET: thêm ?secret=... vào URL.
-function zaloAuth(req, res) {
-  if (req.query.secret !== process.env.NOTIFY_SECRET) { res.status(403).json({ error: 'forbidden' }); return false; }
-  return true;
+// Cho phép truy cập nếu MỘT trong hai điều kiện đúng:
+//  1) Đăng nhập Google bằng email được phép (ZALO_ADMIN_EMAILS, mặc định tuandv@gmail.com)
+//     → gửi kèm header Authorization: Bearer <google_id_token>.
+//  2) (dự phòng) đính kèm ?secret=NOTIFY_SECRET trên URL — dùng khi chưa đăng nhập Google.
+const ZALO_ADMIN_EMAILS = (process.env.ZALO_ADMIN_EMAILS || 'tuandv@gmail.com')
+  .split(',').map((e) => e.trim().toLowerCase()).filter(Boolean);
+async function zaloAuth(req, res) {
+  // 1) Google login với email được phép
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    try {
+      const payload = await verifyGoogleIdToken(authHeader.split(' ')[1]);
+      const email = (payload?.email || '').toLowerCase();
+      if (email && payload.email_verified !== false && ZALO_ADMIN_EMAILS.includes(email)) return true;
+    } catch { /* token sai/hết hạn → thử cách 2 */ }
+  }
+  // 2) Dự phòng: NOTIFY_SECRET qua query
+  if (req.query.secret && req.query.secret === process.env.NOTIFY_SECRET) return true;
+  res.status(403).json({ error: 'forbidden' });
+  return false;
 }
 // Trạng thái: /zalo/health?secret=...
-app.get('/zalo/health', (req, res) => {
-  if (!zaloAuth(req, res)) return;
+app.get('/zalo/health', async (req, res) => {
+  if (!(await zaloAuth(req, res))) return;
   res.json(zaloStatus());
 });
 // Bắt đầu đăng nhập QR: /zalo/login?secret=...  → rồi mở /zalo/qr để quét
 app.get('/zalo/login', async (req, res) => {
-  if (!zaloAuth(req, res)) return;
+  if (!(await zaloAuth(req, res))) return;
   const r = await triggerRelogin();
   res.json({ ...r, next: `Mở /zalo/qr?secret=... sau 2-3 giây để xem mã QR` });
 });
 // Ảnh QR đăng nhập: /zalo/qr?secret=...  (mở bằng trình duyệt, quét bằng app Zalo)
-app.get('/zalo/qr', (req, res) => {
-  if (!zaloAuth(req, res)) return;
+app.get('/zalo/qr', async (req, res) => {
+  if (!(await zaloAuth(req, res))) return;
   const qr = getLastQR();
   if (!qr) return res.status(202).send('QR chưa sẵn sàng — gọi /zalo/login trước rồi tải lại sau vài giây.');
   res.set('Content-Type', 'image/png');
@@ -2495,23 +2512,23 @@ app.get('/zalo/qr', (req, res) => {
 });
 // Gửi thử tin ngay tới target: /zalo/test?secret=...
 app.get('/zalo/test', async (req, res) => {
-  if (!zaloAuth(req, res)) return;
+  if (!(await zaloAuth(req, res))) return;
   res.json(await sendTestMessage());
 });
 // Ép xác minh session ngay: /zalo/verify?secret=...
 app.get('/zalo/verify', async (req, res) => {
-  if (!zaloAuth(req, res)) return;
+  if (!(await zaloAuth(req, res))) return;
   const ok = await verifySession();
   res.json({ sessionValid: ok, ...zaloStatus() });
 });
 // Danh bạ + nhóm Zalo để chọn người nhận: /zalo/friends?secret=...&refresh=1
 app.get('/zalo/friends', async (req, res) => {
-  if (!zaloAuth(req, res)) return;
+  if (!(await zaloAuth(req, res))) return;
   res.json(await listContacts({ force: req.query.refresh === '1' }));
 });
 // Gửi tin ngay tới người / nhóm tuỳ chọn: POST /zalo/send?secret=...  body {targetId, message, targetType}
 app.post('/zalo/send', async (req, res) => {
-  if (!zaloAuth(req, res)) return;
+  if (!(await zaloAuth(req, res))) return;
   const { targetId, message, targetType } = req.body || {};
   const r = await sendMessageTo(targetId, message, targetType || 'user');
   if (r.ok) await logMessage(targetId, targetType || 'user', message, null);
@@ -2519,30 +2536,30 @@ app.post('/zalo/send', async (req, res) => {
 });
 // --- Lịch hẹn gửi tin (CRUD) ---
 app.get('/zalo/schedules', async (req, res) => {
-  if (!zaloAuth(req, res)) return;
+  if (!(await zaloAuth(req, res))) return;
   res.json(await getSchedules());
 });
 app.post('/zalo/schedules', async (req, res) => {
-  if (!zaloAuth(req, res)) return;
+  if (!(await zaloAuth(req, res))) return;
   res.json(await addSchedule(req.body || {}));
 });
 app.put('/zalo/schedules/:id', async (req, res) => {
-  if (!zaloAuth(req, res)) return;
+  if (!(await zaloAuth(req, res))) return;
   const updated = await updateSchedule(req.params.id, req.body || {});
   if (!updated) return res.status(404).json({ error: 'không tìm thấy lịch' });
   res.json(updated);
 });
 app.delete('/zalo/schedules/:id', async (req, res) => {
-  if (!zaloAuth(req, res)) return;
+  if (!(await zaloAuth(req, res))) return;
   res.json(await deleteSchedule(req.params.id));
 });
 // Gửi thử lịch đơn lẻ (lịch đặc biệt sẽ tự tạo nội dung)
 app.post('/zalo/schedules/:id/test', async (req, res) => {
-  if (!zaloAuth(req, res)) return;
+  if (!(await zaloAuth(req, res))) return;
   res.json(await testSchedule(req.params.id));
 });
 // Lịch sử gửi tin theo targetId
 app.get('/zalo/history/:targetId', async (req, res) => {
-  if (!zaloAuth(req, res)) return;
+  if (!(await zaloAuth(req, res))) return;
   res.json(await getMessageHistory(req.params.targetId));
 });

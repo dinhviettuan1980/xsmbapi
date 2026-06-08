@@ -31,7 +31,17 @@ Trang cho phép:
   bật/tắt, sửa, xoá, "gửi thử ngay". Lưu ở `schedules.json`; một cron chạy mỗi
   phút (`runScheduleTick`) đối chiếu giờ VN và gửi, chống trùng theo `lastSentDate`.
 
-### Endpoint mới (đều cần `?secret=NOTIFY_SECRET`)
+### Xác thực trang quản trị
+Các endpoint `/zalo/*` cho qua nếu **một** trong hai đúng:
+1. **Đăng nhập Google** bằng email được phép (env `ZALO_ADMIN_EMAILS`, mặc định
+   `tuandv@gmail.com`) — FE gửi kèm `Authorization: Bearer <google_id_token>`.
+2. (dự phòng) đính kèm `?secret=NOTIFY_SECRET` — dùng khi chưa đăng nhập Google.
+
+FE (`/zalo-admin`) ưu tiên đăng nhập Google; nếu phiên Google hết hạn hoặc chưa
+đăng nhập được thì mới hiện ô nhập NOTIFY_SECRET. App đã bật `GoogleOAuthProvider`
+(client ID có sẵn fallback, override qua `REACT_APP_GOOGLE_CLIENT_ID`).
+
+### Endpoint mới (xác thực như trên)
 - `GET  /zalo/health`   — trạng thái (đã thêm `sessionValid`, `loggedInAt`, `lastVerifiedAt`, `accountName`).
 - `GET  /zalo/verify`   — ép xác minh session ngay.
 - `GET  /zalo/friends`  — danh bạ (cache `friends.json`); thêm `&refresh=1` để lấy mới từ Zalo.
