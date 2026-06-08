@@ -17,6 +17,30 @@ Bot đã được nhúng vào API thay vì chạy tiến trình riêng:
 - Vì đã nhúng, chỉ cần **một** service cho cả API + bot (xem `zalo-bot.service`),
   không chạy `bot.js` song song nữa.
 
+## 🆕 Trang quản trị trên Frontend + lịch hẹn cấu hình được
+Đã thêm trang **Quản trị Zalo Bot** ở frontend (`/zalo-admin`, menu "🤖 Quản trị
+Zalo Bot"). Đăng nhập bằng `NOTIFY_SECRET` (lưu ở localStorage `zalo_secret`).
+Trang cho phép:
+- **Theo dõi session hết hạn**: backend xác minh session 20 phút/lần bằng
+  `fetchAccountInfo()` → cờ `sessionValid`. Khi vừa hết hạn, báo Telegram 1 lần.
+  Trang hiện badge xanh/đỏ + "đăng nhập lúc" / "xác minh cuối", tự refresh 30s.
+- **Đăng nhập lại bằng QR ngay trên web**: nút gọi `/zalo/login` rồi tự poll
+  `/zalo/qr` hiện ảnh QR để quét (không cần Telegram, hợp với server bị chặn TG).
+- **Lịch hẹn gửi tin** do người dùng cấu hình: chọn người nhận từ **danh bạ Zalo**
+  (lấy qua `/zalo/friends`), nhập nội dung, chọn giờ (giờ VN) và thứ trong tuần,
+  bật/tắt, sửa, xoá, "gửi thử ngay". Lưu ở `schedules.json`; một cron chạy mỗi
+  phút (`runScheduleTick`) đối chiếu giờ VN và gửi, chống trùng theo `lastSentDate`.
+
+### Endpoint mới (đều cần `?secret=NOTIFY_SECRET`)
+- `GET  /zalo/health`   — trạng thái (đã thêm `sessionValid`, `loggedInAt`, `lastVerifiedAt`, `accountName`).
+- `GET  /zalo/verify`   — ép xác minh session ngay.
+- `GET  /zalo/friends`  — danh bạ (cache `friends.json`); thêm `&refresh=1` để lấy mới từ Zalo.
+- `POST /zalo/send`     — body `{targetId, message}` gửi ngay tới người tuỳ chọn.
+- `GET/POST /zalo/schedules`, `PUT/DELETE /zalo/schedules/:id` — CRUD lịch hẹn.
+- (giữ nguyên) `GET /zalo/login`, `/zalo/qr`, `/zalo/test`.
+
+`friends.json` và `schedules.json` đã thêm vào `.gitignore`.
+
 Phần dưới là ghi chú gốc (kiến trúc tiến trình riêng) — giữ lại để tham khảo.
 
 ## Mục tiêu

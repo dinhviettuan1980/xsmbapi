@@ -6,3 +6,5 @@ knowledge/
 *.pem
 cred.json
 last_sent.txt
+friends.json
+schedules.json

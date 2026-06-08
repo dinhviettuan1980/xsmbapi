@@ -7,7 +7,7 @@ const cron = require('node-cron');
 const fetchAndSaveXSMB = require('./crawler');
 const fetchBulkXSMB = require('./crawler_bulk');
 const sendTelegramMessage = require('./telegram');
-const { startZaloBot, zaloStatus, triggerRelogin, getLastQR, sendTestMessage } = require('./bot');
+const { startZaloBot, zaloStatus, triggerRelogin, getLastQR, sendTestMessage, verifySession, listFriends, sendMessageTo, getSchedules, addSchedule, updateSchedule, deleteSchedule } = require('./bot');
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
@@ -2497,4 +2497,40 @@ app.get('/zalo/qr', (req, res) => {
 app.get('/zalo/test', async (req, res) => {
   if (!zaloAuth(req, res)) return;
   res.json(await sendTestMessage());
+});
+// Ép xác minh session ngay: /zalo/verify?secret=...
+app.get('/zalo/verify', async (req, res) => {
+  if (!zaloAuth(req, res)) return;
+  const ok = await verifySession();
+  res.json({ sessionValid: ok, ...zaloStatus() });
+});
+// Danh bạ Zalo để chọn người nhận: /zalo/friends?secret=...&refresh=1
+app.get('/zalo/friends', async (req, res) => {
+  if (!zaloAuth(req, res)) return;
+  res.json(await listFriends({ force: req.query.refresh === '1' }));
+});
+// Gửi tin ngay tới người tuỳ chọn: POST /zalo/send?secret=...  body {targetId, message}
+app.post('/zalo/send', async (req, res) => {
+  if (!zaloAuth(req, res)) return;
+  const { targetId, message } = req.body || {};
+  res.json(await sendMessageTo(targetId, message));
+});
+// --- Lịch hẹn gửi tin (CRUD) ---
+app.get('/zalo/schedules', (req, res) => {
+  if (!zaloAuth(req, res)) return;
+  res.json(getSchedules());
+});
+app.post('/zalo/schedules', (req, res) => {
+  if (!zaloAuth(req, res)) return;
+  res.json(addSchedule(req.body || {}));
+});
+app.put('/zalo/schedules/:id', (req, res) => {
+  if (!zaloAuth(req, res)) return;
+  const updated = updateSchedule(req.params.id, req.body || {});
+  if (!updated) return res.status(404).json({ error: 'không tìm thấy lịch' });
+  res.json(updated);
+});
+app.delete('/zalo/schedules/:id', (req, res) => {
+  if (!zaloAuth(req, res)) return;
+  res.json(deleteSchedule(req.params.id));
 });

@@ -15,6 +15,8 @@ const ENABLED   = process.env.ZALO_ENABLED !== "false";   // đặt ZALO_ENABLED
 
 const CRED_FILE = path.join(__dirname, "cred.json");
 const SENT_FILE = path.join(__dirname, "last_sent.txt");
+const FRIENDS_FILE = path.join(__dirname, "friends.json");     // cache danh bạ để FE chọn người nhận
+const SCHEDULES_FILE = path.join(__dirname, "schedules.json"); // lịch gửi tin do FE cấu hình
 
 // zca-js được nạp lười (lazy) trong startZaloBot() để việc thiếu thư viện / chưa
 // cấu hình không làm sập tiến trình API khi require('./bot').
@@ -28,6 +30,10 @@ let lastQR = null;          // ảnh QR base64 gần nhất (phục vụ đăng 
 let reloginRunning = false; // tránh chạy 2 phiên relogin chồng nhau
 let lastLoginEvent = null;  // sự kiện QR gần nhất (chẩn đoán riêng, không bị poll ghi đè)
 let lastLoginError = null;  // lỗi trong quá trình đăng nhập (tách khỏi lỗi poll Telegram)
+let loggedInAt = null;      // thời điểm đăng nhập thành công gần nhất (ISO)
+let lastVerifiedAt = null;  // lần cuối xác minh session còn sống (ISO)
+let sessionValid = false;   // session còn dùng được không (kiểm bằng fetchAccountInfo)
+let accountName = null;     // tên tài khoản Zalo đang đăng nhập (để hiển thị trên FE)
 
 // Trạng thái để chẩn đoán từ xa qua endpoint /zalo/health
 function zaloStatus() {
@@ -35,6 +41,10 @@ function zaloStatus() {
     enabled: ENABLED,
     started,
     loggedIn,
+    sessionValid,
+    accountName,
+    loggedInAt,
+    lastVerifiedAt,
     hasCred: (() => { try { return fs.existsSync(CRED_FILE); } catch { return false; } })(),
     targetId: TARGET_ID ? "set" : "missing",
     cron: CRON_EXPR,
@@ -45,6 +55,7 @@ function zaloStatus() {
     reloginRunning,
     lastLoginEvent,
     lastLoginError,
+    now: new Date().toISOString(),
   };
 }
 
@@ -111,6 +122,30 @@ async function loginFromFile() {
   attachListener();
   api.listener.start();
   loggedIn = true;
+  loggedInAt = new Date().toISOString();
+  await verifySession(); // xác minh ngay để biết cred.json còn hạn không
+}
+
+// Xác minh session còn sống bằng một API nhẹ (fetchAccountInfo). Trả true/false và
+// cập nhật sessionValid + lastVerifiedAt. Khi phát hiện hết hạn thì báo Telegram 1 lần.
+async function verifySession() {
+  if (!api) { sessionValid = false; return false; }
+  const wasValid = sessionValid;
+  try {
+    if (typeof api.fetchAccountInfo === "function") {
+      const info = await api.fetchAccountInfo();
+      accountName = info?.profile?.displayName || info?.profile?.zaloName || accountName;
+    }
+    sessionValid = true;
+    lastVerifiedAt = new Date().toISOString();
+    return true;
+  } catch (e) {
+    sessionValid = false;
+    lastVerifiedAt = new Date().toISOString();
+    lastLoginError = "verify: " + (e?.message || e);
+    if (wasValid) await tg("🔴 Session Zalo đã HẾT HẠN. Vào trang quản trị (hoặc gửi /relogin) để quét QR đăng nhập lại.");
+    return false;
+  }
 }
 
 async function relogin() {
@@ -155,6 +190,8 @@ async function relogin() {
   attachListener();
   api.listener.start();
   loggedIn = true;
+  loggedInAt = new Date().toISOString();
+  await verifySession();
   await tg("✅ Đăng nhập lại thành công, bot hoạt động tiếp.");
 }
 
@@ -181,6 +218,121 @@ async function sendTestMessage() {
   } catch (e) {
     return { ok: false, error: e?.message || String(e) };
   }
+}
+
+// Gửi tin tới một người bất kỳ (dùng cho lịch hẹn và nút "gửi thử" trên FE)
+async function sendMessageTo(targetId, message) {
+  if (!api) return { ok: false, error: "chưa đăng nhập Zalo" };
+  if (!targetId) return { ok: false, error: "thiếu targetId" };
+  if (!message) return { ok: false, error: "thiếu nội dung" };
+  try {
+    await api.sendMessage({ msg: String(message) }, String(targetId), ThreadType.User);
+    return { ok: true, to: targetId };
+  } catch (e) {
+    return { ok: false, error: e?.message || String(e) };
+  }
+}
+
+// ---- Danh bạ Zalo (cache ra file để FE chọn người nhận) ----
+function readFriendsCache() {
+  try { return JSON.parse(fs.readFileSync(FRIENDS_FILE, "utf8")); }
+  catch { return { updatedAt: null, friends: [] }; }
+}
+// Lấy danh bạ. force=true thì gọi Zalo lấy mới, ngược lại trả cache nếu có.
+async function listFriends({ force = false } = {}) {
+  const cache = readFriendsCache();
+  if (!force && cache.friends.length) return cache;
+  if (!api) return { ...cache, error: "chưa đăng nhập Zalo" };
+  try {
+    const raw = await api.getAllFriends();
+    const friends = (raw || []).map((f) => ({
+      userId: f.userId,
+      name: f.zaloName || f.displayName || "",
+      avatar: f.avatar || "",
+    })).filter((f) => f.userId);
+    const out = { updatedAt: new Date().toISOString(), friends };
+    fs.writeFileSync(FRIENDS_FILE, JSON.stringify(out));
+    return out;
+  } catch (e) {
+    return { ...cache, error: e?.message || String(e) };
+  }
+}
+
+// ---- Lịch gửi tin do FE cấu hình ----
+// Mỗi lịch: { id, targetId, targetName, message, time:"HH:MM", days:[0..6] (rỗng=mỗi ngày),
+//             enabled:bool, lastSentDate:"YYYY-MM-DD", createdAt }
+function loadSchedules() {
+  try { return JSON.parse(fs.readFileSync(SCHEDULES_FILE, "utf8")); }
+  catch { return []; }
+}
+function saveSchedules(list) {
+  fs.writeFileSync(SCHEDULES_FILE, JSON.stringify(list, null, 2));
+}
+function getSchedules() { return loadSchedules(); }
+function addSchedule(s) {
+  const list = loadSchedules();
+  const item = {
+    id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+    targetId: String(s.targetId || ""),
+    targetName: s.targetName || "",
+    message: s.message || "",
+    time: /^\d{1,2}:\d{2}$/.test(s.time || "") ? s.time : "08:00",
+    days: Array.isArray(s.days) ? s.days.map(Number).filter((d) => d >= 0 && d <= 6) : [],
+    enabled: s.enabled !== false,
+    lastSentDate: null,
+    createdAt: new Date().toISOString(),
+  };
+  list.push(item);
+  saveSchedules(list);
+  return item;
+}
+function updateSchedule(id, patch) {
+  const list = loadSchedules();
+  const i = list.findIndex((x) => x.id === id);
+  if (i < 0) return null;
+  const allowed = ["targetId", "targetName", "message", "time", "days", "enabled"];
+  for (const k of allowed) if (k in patch) list[i][k] = patch[k];
+  if ("days" in patch) list[i].days = Array.isArray(patch.days) ? patch.days.map(Number) : [];
+  saveSchedules(list);
+  return list[i];
+}
+function deleteSchedule(id) {
+  const list = loadSchedules();
+  const next = list.filter((x) => x.id !== id);
+  saveSchedules(next);
+  return { deleted: list.length - next.length };
+}
+// Giờ:phút và thứ hiện tại theo giờ Việt Nam
+function nowVNParts() {
+  const fmt = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Ho_Chi_Minh", hour: "2-digit", minute: "2-digit", weekday: "short", hour12: false,
+  });
+  const parts = Object.fromEntries(fmt.formatToParts(new Date()).map((p) => [p.type, p.value]));
+  const wmap = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+  return { hm: `${parts.hour}:${parts.minute}`, day: wmap[parts.weekday] };
+}
+// Chạy mỗi phút: gửi các lịch khớp giờ hiện tại, chống gửi trùng trong ngày.
+async function runScheduleTick() {
+  const list = loadSchedules();
+  if (!list.length) return;
+  const { hm, day } = nowVNParts();
+  const today = todayVN();
+  let changed = false;
+  for (const s of list) {
+    if (!s.enabled || !s.targetId || !s.message) continue;
+    if ((s.time || "").padStart(5, "0") !== hm) continue;
+    if (s.days && s.days.length && !s.days.includes(day)) continue;
+    if (s.lastSentDate === today) continue; // đã gửi hôm nay
+    const r = await sendMessageTo(s.targetId, s.message);
+    if (r.ok) {
+      s.lastSentDate = today;
+      changed = true;
+      await tg(`📨 Đã gửi lịch hẹn tới ${s.targetName || s.targetId} lúc ${hm}.`);
+    } else {
+      await tg(`⚠️ Lịch hẹn tới ${s.targetName || s.targetId} thất bại: ${r.error}`);
+    }
+  }
+  if (changed) saveSchedules(list);
 }
 
 // Lắng nghe lệnh /relogin từ Telegram (long-polling, không cần thư viện ngoài)
@@ -254,12 +406,22 @@ async function startZaloBot() {
     }
   }, { timezone: "Asia/Ho_Chi_Minh" });
 
+  // Lịch hẹn do FE cấu hình: kiểm mỗi phút
+  cron.schedule("* * * * *", () => { runScheduleTick().catch((e) => { lastError = "schedule: " + (e?.message || e); }); }, { timezone: "Asia/Ho_Chi_Minh" });
+
+  // Xác minh session còn sống mỗi 20 phút → phát hiện hết hạn sớm, báo Telegram
+  cron.schedule("*/20 * * * *", () => { verifySession().catch(() => {}); });
+
   poll();
   try { await loginFromFile(); console.log("[zalo-bot] đã đăng nhập từ cred.json"); }
   catch (e) { lastError = "loginFromFile: " + (e?.message || e); await tg("⚠️ Bot Zalo khởi động chưa có session. Gửi /relogin để quét QR."); }
 }
 
-module.exports = { startZaloBot, zaloStatus, triggerRelogin, getLastQR, sendTestMessage };
+module.exports = {
+  startZaloBot, zaloStatus, triggerRelogin, getLastQR, sendTestMessage,
+  verifySession, listFriends, sendMessageTo,
+  getSchedules, addSchedule, updateSchedule, deleteSchedule,
+};
 
 // Cho phép chạy độc lập để test: `node bot.js`
 if (require.main === module) startZaloBot();
