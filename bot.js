@@ -4,6 +4,7 @@ const cron = require("node-cron");
 const fs = require("fs");
 const path = require("path");
 require("dotenv").config();
+const dbPromise = require("./db");
 
 // Cấu hình lấy từ .env (dùng chung TELEGRAM_TOKEN/CHAT_ID với phần còn lại của project)
 const TARGET_ID = process.env.ZALO_TARGET_ID || "";
@@ -258,50 +259,78 @@ async function listFriends({ force = false } = {}) {
   }
 }
 
-// ---- Lịch gửi tin do FE cấu hình ----
-// Mỗi lịch: { id, targetId, targetName, message, time:"HH:MM", days:[0..6] (rỗng=mỗi ngày),
-//             enabled:bool, lastSentDate:"YYYY-MM-DD", createdAt }
-function loadSchedules() {
-  try { return JSON.parse(fs.readFileSync(SCHEDULES_FILE, "utf8")); }
-  catch { return []; }
+// ---- Lịch gửi tin do FE cấu hình — lưu trong SQLite ----
+async function initSchedulesDB() {
+  const db = await dbPromise;
+  await db.run(`
+    CREATE TABLE IF NOT EXISTS zalo_schedules (
+      id TEXT PRIMARY KEY,
+      targetId TEXT NOT NULL,
+      targetName TEXT DEFAULT '',
+      message TEXT NOT NULL,
+      time TEXT NOT NULL DEFAULT '08:00',
+      days TEXT DEFAULT '[]',
+      enabled INTEGER DEFAULT 1,
+      lastSentDate TEXT,
+      createdAt TEXT
+    )
+  `);
+  // Seed lịch từ env vars nếu bảng rỗng
+  const row = await db.get("SELECT COUNT(*) as cnt FROM zalo_schedules");
+  if (row.cnt === 0 && TARGET_ID && MESSAGE) {
+    const parts = CRON_EXPR.trim().split(/\s+/);
+    const time = parts.length >= 2
+      ? `${parts[1].padStart(2, "0")}:${parts[0].padStart(2, "0")}`
+      : "06:00";
+    await db.run(
+      `INSERT INTO zalo_schedules (id,targetId,targetName,message,time,days,enabled,lastSentDate,createdAt)
+       VALUES (?,?,?,?,?,?,?,?,?)`,
+      [Date.now().toString(36) + "init", TARGET_ID, "", MESSAGE, time, "[]", 1, null, new Date().toISOString()]
+    );
+    console.log("[zalo-bot] Seeded initial schedule from env vars →", time);
+  }
 }
-function saveSchedules(list) {
-  fs.writeFileSync(SCHEDULES_FILE, JSON.stringify(list, null, 2));
+
+function rowToSchedule(r) {
+  return { ...r, days: JSON.parse(r.days || "[]"), enabled: r.enabled === 1 };
 }
-function getSchedules() { return loadSchedules(); }
-function addSchedule(s) {
-  const list = loadSchedules();
-  const item = {
-    id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-    targetId: String(s.targetId || ""),
-    targetName: s.targetName || "",
-    message: s.message || "",
-    time: /^\d{1,2}:\d{2}$/.test(s.time || "") ? s.time : "08:00",
-    days: Array.isArray(s.days) ? s.days.map(Number).filter((d) => d >= 0 && d <= 6) : [],
-    enabled: s.enabled !== false,
-    lastSentDate: null,
-    createdAt: new Date().toISOString(),
-  };
-  list.push(item);
-  saveSchedules(list);
-  return item;
+
+async function getSchedules() {
+  const db = await dbPromise;
+  const rows = await db.all("SELECT * FROM zalo_schedules ORDER BY createdAt ASC");
+  return rows.map(rowToSchedule);
 }
-function updateSchedule(id, patch) {
-  const list = loadSchedules();
-  const i = list.findIndex((x) => x.id === id);
-  if (i < 0) return null;
-  const allowed = ["targetId", "targetName", "message", "time", "days", "enabled"];
-  for (const k of allowed) if (k in patch) list[i][k] = patch[k];
-  if ("days" in patch) list[i].days = Array.isArray(patch.days) ? patch.days.map(Number) : [];
-  saveSchedules(list);
-  return list[i];
+async function addSchedule(s) {
+  const db = await dbPromise;
+  const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  const days = JSON.stringify(Array.isArray(s.days) ? s.days.map(Number).filter((d) => d >= 0 && d <= 6) : []);
+  const time = /^\d{1,2}:\d{2}$/.test(s.time || "") ? s.time : "08:00";
+  const createdAt = new Date().toISOString();
+  await db.run(
+    `INSERT INTO zalo_schedules (id,targetId,targetName,message,time,days,enabled,lastSentDate,createdAt)
+     VALUES (?,?,?,?,?,?,?,?,?)`,
+    [id, String(s.targetId || ""), s.targetName || "", s.message || "", time, days, s.enabled !== false ? 1 : 0, null, createdAt]
+  );
+  return rowToSchedule(await db.get("SELECT * FROM zalo_schedules WHERE id=?", [id]));
 }
-function deleteSchedule(id) {
-  const list = loadSchedules();
-  const next = list.filter((x) => x.id !== id);
-  saveSchedules(next);
-  return { deleted: list.length - next.length };
+async function updateSchedule(id, patch) {
+  const db = await dbPromise;
+  if (!(await db.get("SELECT 1 FROM zalo_schedules WHERE id=?", [id]))) return null;
+  const sets = []; const params = [];
+  for (const k of ["targetId", "targetName", "message", "time"]) {
+    if (k in patch) { sets.push(`${k}=?`); params.push(patch[k]); }
+  }
+  if ("enabled" in patch) { sets.push("enabled=?"); params.push(patch.enabled !== false ? 1 : 0); }
+  if ("days" in patch) { sets.push("days=?"); params.push(JSON.stringify(Array.isArray(patch.days) ? patch.days.map(Number) : [])); }
+  if (sets.length) { params.push(id); await db.run(`UPDATE zalo_schedules SET ${sets.join(",")} WHERE id=?`, params); }
+  return rowToSchedule(await db.get("SELECT * FROM zalo_schedules WHERE id=?", [id]));
 }
+async function deleteSchedule(id) {
+  const db = await dbPromise;
+  const r = await db.run("DELETE FROM zalo_schedules WHERE id=?", [id]);
+  return { deleted: r.changes };
+}
+
 // Giờ:phút và thứ hiện tại theo giờ Việt Nam
 function nowVNParts() {
   const fmt = new Intl.DateTimeFormat("en-GB", {
@@ -313,26 +342,24 @@ function nowVNParts() {
 }
 // Chạy mỗi phút: gửi các lịch khớp giờ hiện tại, chống gửi trùng trong ngày.
 async function runScheduleTick() {
-  const list = loadSchedules();
+  const list = await getSchedules();
   if (!list.length) return;
   const { hm, day } = nowVNParts();
   const today = todayVN();
-  let changed = false;
+  const db = await dbPromise;
   for (const s of list) {
     if (!s.enabled || !s.targetId || !s.message) continue;
     if ((s.time || "").padStart(5, "0") !== hm) continue;
     if (s.days && s.days.length && !s.days.includes(day)) continue;
-    if (s.lastSentDate === today) continue; // đã gửi hôm nay
+    if (s.lastSentDate === today) continue;
     const r = await sendMessageTo(s.targetId, s.message);
     if (r.ok) {
-      s.lastSentDate = today;
-      changed = true;
+      await db.run("UPDATE zalo_schedules SET lastSentDate=? WHERE id=?", [today, s.id]);
       await tg(`📨 Đã gửi lịch hẹn tới ${s.targetName || s.targetId} lúc ${hm}.`);
     } else {
       await tg(`⚠️ Lịch hẹn tới ${s.targetName || s.targetId} thất bại: ${r.error}`);
     }
   }
-  if (changed) saveSchedules(list);
 }
 
 // Lắng nghe lệnh /relogin từ Telegram (long-polling, không cần thư viện ngoài)
@@ -391,20 +418,8 @@ async function startZaloBot() {
   }
   started = true;
 
-  // Gửi tin mỗi ngày theo CRON_EXPR (mặc định 17h30), giờ Việt Nam
-  cron.schedule(CRON_EXPR, async () => {
-    if (alreadySentToday()) return;        // đã gửi hôm nay rồi → bỏ qua, không gửi lại
-    if (!api) return tg("⚠️ Chưa đăng nhập Zalo. Gửi /relogin để quét QR.");
-    if (!TARGET_ID) return tg("⚠️ Chưa cấu hình ZALO_TARGET_ID.");
-    try {
-      await api.sendMessage({ msg: MESSAGE }, TARGET_ID, ThreadType.User);
-      markSentToday();                     // đánh dấu ngay sau khi gửi thành công
-      console.log(new Date().toISOString(), "[zalo-bot] đã gửi");
-      scheduleNudges(); // bắt đầu theo dõi đối tượng có trả lời không
-    } catch (e) {
-      await tg(`⚠️ Gửi Zalo thất bại: ${e.message}\nGửi /relogin để khôi phục.`);
-    }
-  }, { timezone: "Asia/Ho_Chi_Minh" });
+  // Khởi tạo bảng lịch trong DB (và seed từ env nếu chưa có lịch nào)
+  await initSchedulesDB();
 
   // Lịch hẹn do FE cấu hình: kiểm mỗi phút
   cron.schedule("* * * * *", () => { runScheduleTick().catch((e) => { lastError = "schedule: " + (e?.message || e); }); }, { timezone: "Asia/Ho_Chi_Minh" });

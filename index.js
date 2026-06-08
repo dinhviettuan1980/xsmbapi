@@ -2516,21 +2516,21 @@ app.post('/zalo/send', async (req, res) => {
   res.json(await sendMessageTo(targetId, message));
 });
 // --- Lịch hẹn gửi tin (CRUD) ---
-app.get('/zalo/schedules', (req, res) => {
+app.get('/zalo/schedules', async (req, res) => {
   if (!zaloAuth(req, res)) return;
-  res.json(getSchedules());
+  res.json(await getSchedules());
 });
-app.post('/zalo/schedules', (req, res) => {
+app.post('/zalo/schedules', async (req, res) => {
   if (!zaloAuth(req, res)) return;
-  res.json(addSchedule(req.body || {}));
+  res.json(await addSchedule(req.body || {}));
 });
-app.put('/zalo/schedules/:id', (req, res) => {
+app.put('/zalo/schedules/:id', async (req, res) => {
   if (!zaloAuth(req, res)) return;
-  const updated = updateSchedule(req.params.id, req.body || {});
+  const updated = await updateSchedule(req.params.id, req.body || {});
   if (!updated) return res.status(404).json({ error: 'không tìm thấy lịch' });
   res.json(updated);
 });
-app.delete('/zalo/schedules/:id', (req, res) => {
+app.delete('/zalo/schedules/:id', async (req, res) => {
   if (!zaloAuth(req, res)) return;
-  res.json(deleteSchedule(req.params.id));
+  res.json(await deleteSchedule(req.params.id));
 });
